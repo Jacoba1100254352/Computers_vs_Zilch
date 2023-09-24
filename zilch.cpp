@@ -11,22 +11,13 @@ unsigned zilch::roll() {
     return static_cast<unsigned>(dist(mt));
 }
 void zilch::rollSixDice(zilch &game) {
-    zilch::clear();
-    game.diceSetMap.clear(); // reset the map to be filled again
+    zilch::clear(); // Clear the screen
+    game.diceSetMap.clear(); // Reset the map to be filled again
     game.setOptionSelectedBool(false); // No options have yet been selected after a new roll
     game.setContinueSelectingBool(true); // Reset to allow for continuous selection after each new roll
 
-/*    ///   If no dice left, reset to 6   ///
-    if ( game.getNumOfDiceInPlay() == 0 ) {
-        game.setNumOfDiceInPlay( 6 );
-    }*/ // This is done in Check()
-
-    for (int i = 0; i < game.getNumOfDiceInPlay(); i++) {
-        unsigned roll = game.roll();
-        game.diceSetMap[roll]++;
-    }
-
-    //std::cout << "\nThe dice have been rolled" << std::endl;
+    for (int i = 0; i < game.getNumOfDiceInPlay(); i++)
+        game.diceSetMap[game.roll()]++;
 
     /// Run checks on what is possible to play   ///
     zilch::check(game);

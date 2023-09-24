@@ -123,7 +123,7 @@ public:
     static void single(zilch &, unsigned);
     static void check(zilch &);
     static void updateValOfAvailableMultiples(zilch &);
-    static void applyAllPossibleOptions(zilch&);
+    static void applyAllPossibleOptions(zilch &);
 
     /*******************************
     *   UNUSED FINDING FUNCTIONS   *
@@ -309,6 +309,12 @@ public:
             } /// else continueSelecting = false, roll again
         } else if (val && bust) val = false;
         continueTurn = val;
+    }
+
+    ///      ///
+    std::map<unsigned, unsigned> getMap(zilch &game) const
+    {
+        return game.diceSetMap;
     }
 
     ///   scoreFromSingles Functions   ///

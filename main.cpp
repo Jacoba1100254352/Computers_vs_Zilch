@@ -1,4 +1,5 @@
 #include "zilch.h"
+#include "computer.h"
 
 /*
 * Should I use 2-3 objects, one for general play variables, a list of objects for each player with their info? Maybe one for dice info?
@@ -6,18 +7,36 @@
 * When using get functions in for loops assign them to a variable to avoid multiple calls
 */
 
+void setUpGame(zilch &);
+void playGame(zilch &);
+
 using namespace std;
 
 int main() {
-    /**************************************
-    *    Setting objects and variables    *
-    **************************************/
+    /******************
+    *   Set Up Game   *
+    ******************/
+    zilch game;
+    setUpGame(game);
+
+    /*********************************
+    *   Rolling and Scoring people   *
+    *********************************/
+    playGame(game);
+
+    return 0;
+}
+
+void setUpGame(zilch &game)
+{
+    /************************************
+    *   Setting objects and variables   *
+    ************************************/
     ///   Variable Defaults   ///
     const unsigned FULL_SET_OF_DICE = 6;
     unsigned numPlayers = 2;
     unsigned scoreLimit = 5000;
     string player;
-    zilch game;
 
     /***************
     *   Welcome!   *
@@ -36,9 +55,9 @@ int main() {
          << "Finally, only single 1's or 5's are worth points with a single 1 being 100 points and a 5 being 50." << endl;
     zilch::pauseAndContinue(game);
 
-    /***************************
-    *    Setting up players    *
-    ***************************/
+    /*************************
+    *   Setting up players   *
+    *************************/
     ///   Input score limit and failsafe   ///
     cout << "A minimum score of 1000 is needed to play the game," << endl
          << "but a score of 5000 or more being recommended.\n" << endl
@@ -98,17 +117,19 @@ int main() {
 
     zilch::pauseAndContinue(game);
     zilch::clear();
+}
 
-    /***********************************
-    *    Rolling and Scoring people    *
-    ***********************************/
+void playGame(zilch &game)
+{
+    const unsigned FULL_SET_OF_DICE = 6;
+
     while (!game.winBool()) {
         game.setContinueTurnBool(true);
         while (game.getContinueTurnBool() && (game.getPermanentScore(game.getCurrentPlayer()) < game.getScoreLimit()))
             zilch::rollSixDice(game);
 
         ///   Player Exceeded Score Limit   ///
-        if (game.getPermanentScore(game.getCurrentPlayer()) >= scoreLimit)
+        if (game.getPermanentScore(game.getCurrentPlayer()) >= game.getScoreLimit())
             break;
 
         ///   Continue to next player   ///
@@ -117,7 +138,7 @@ int main() {
         game.setNumOfDiceInPlay(FULL_SET_OF_DICE);
 
         ///   Print all players' scores   ///
-        for (unsigned i = 0; i < numPlayers; i++)
+        for (unsigned i = 0; i < game.getAmountOfPlayers(); i++)
             cout << game.getPlayer(i) << "\tCurrent Score: " << game.getPermanentScore(game.getPlayer(i)) << endl << flush;
         zilch::pauseAndContinue(game);
     }
@@ -126,11 +147,9 @@ int main() {
     zilch::lastTurnOpportunity(game, FULL_SET_OF_DICE);
 
     ///   Prints Ending Score of each player   ///
-    for (unsigned i = 0; i < numPlayers; i++)
+    for (unsigned i = 0; i < game.getAmountOfPlayers(); i++)
         cout << game.getPlayer(i) << "\tFinal Score: " << game.getPermanentScore(game.getPlayer(i)) << endl;
 
     ///   Tie and Game End Function   ///
     zilch::tiedEnding(game);
-
-    return 0;
 }
