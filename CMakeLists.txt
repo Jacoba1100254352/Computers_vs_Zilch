@@ -8,12 +8,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 include(CTest)
 
+set(ZILCH_CORE_SOURCES
+    zilch.cpp
+    computer.cpp)
+
 add_executable(zilch
     main.cpp
-    zilch.cpp
-    computer.cpp
+    ${ZILCH_CORE_SOURCES}
     InputClosed.h)
 
+target_include_directories(zilch PRIVATE ${PROJECT_SOURCE_DIR})
 target_link_libraries(zilch PRIVATE Threads::Threads)
 
 if(MSVC)
@@ -24,10 +28,10 @@ endif()
 
 if(BUILD_TESTING)
     add_executable(zilch_tests
-        tests.cpp
-        zilch.cpp
-        computer.cpp
+        tests/regression_tests.cpp
+        ${ZILCH_CORE_SOURCES}
         InputClosed.h)
+    target_include_directories(zilch_tests PRIVATE ${PROJECT_SOURCE_DIR})
     target_link_libraries(zilch_tests PRIVATE Threads::Threads)
 
     if(MSVC)

@@ -28,7 +28,7 @@ ctest --test-dir build --output-on-failure
 make test
 ```
 
-The test suite covers rule scoring, hot-dice resets, bust/bank behavior, policy parser validation, CLI validation, and mirrored arena behavior.
+The `zilch_tests` target in `tests/regression_tests.cpp` covers rule scoring, hot-dice resets, player/final-round state resets, bust/bank behavior, policy parser validation, CLI validation, and mirrored arena behavior.
 
 ## Play Against The Computer
 

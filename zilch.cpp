@@ -55,6 +55,15 @@ void GameManager::setPlayers(const std::vector<std::string>& playerNames)
     for (const auto& playerName : playerNames)
         players_.emplace_back(playerName);
     currentIndex_ = 0;
+    turnActive_ = false;
+    selectedOption_ = false;
+    bustPending_ = false;
+    hasRolledThisTurn_ = false;
+    bustBonusUsedThisTurn_ = false;
+    rollCountThisTurn_ = 0;
+    finalRoundActive_ = false;
+    finalRoundStarterIndex_ = 0;
+    clearSavedMultiples();
 }
 
 void GameManager::switchToNextPlayer()
@@ -96,6 +105,9 @@ void GameManager::registerRoll()
 
 void GameManager::manageDiceCount(const std::uint16_t numDice)
 {
+    if (players_.empty())
+        return;
+
     const bool resetsToFullSet = numDice == 0 || numDice >= FULL_SET_OF_DICE;
     currentPlayer().dice().setNumDiceInPlay(resetsToFullSet ? FULL_SET_OF_DICE : numDice);
     if (resetsToFullSet)

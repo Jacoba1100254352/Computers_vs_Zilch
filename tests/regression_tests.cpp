@@ -136,6 +136,56 @@ void testMultipleExtensionAndHotDiceReset()
     expect(options[0].type == zilch::OptionType::Single && options[0].scoreGain == 100, "single one should not extend old chain");
 }
 
+void testSinglesMultiplesAndHotDiceEdges()
+{
+    {
+        auto game = makeGame();
+        zilch::Checker checker(game);
+
+        setDice(game, {1, 1, 1, 5});
+        const auto options = checker.availableOptions();
+        expect(findOption(options, zilch::OptionType::Multiple, 1) != nullptr, "triple ones should expose a multiple option");
+        expect(findOption(options, zilch::OptionType::Single, 1) == nullptr, "triple ones should not masquerade as a single option");
+
+        const auto* singleFive = findOption(options, zilch::OptionType::Single, 5);
+        expect(singleFive != nullptr, "standalone five should remain scoreable beside a triple");
+        checker.applyOption(*singleFive);
+        expect(game.currentPlayer().score().roundScore() == 50, "single five should score exactly 50");
+        expect(game.currentPlayer().dice().numDiceInPlay() == 3, "single five should remove one die");
+        expect(game.currentPlayer().dice().diceSetMap().count(5) == 0, "single five should remove only the five");
+        expect(game.currentPlayer().dice().diceSetMap().at(1) == 3, "single five should leave the triple ones intact");
+    }
+
+    {
+        auto game = makeGame();
+        zilch::Checker checker(game);
+
+        setDice(game, {1, 1});
+        const auto options = checker.availableOptions();
+        const auto* singleOne = findOption(options, zilch::OptionType::Single, 1);
+        expect(singleOne != nullptr, "paired ones should expose a single-one option");
+        checker.applyOption(*singleOne);
+        expect(game.currentPlayer().score().roundScore() == 100, "single one should score exactly 100");
+        expect(game.currentPlayer().dice().numDiceInPlay() == 1, "single one should remove exactly one die");
+        expect(game.currentPlayer().dice().diceSetMap().at(1) == 1, "one die of value one should remain");
+    }
+
+    {
+        auto game = makeGame();
+        zilch::Checker checker(game);
+
+        setDice(game, {1, 1, 1, 1});
+        const auto options = checker.availableOptions();
+        const auto* fourOnes = findOption(options, zilch::OptionType::Multiple, 1);
+        expect(fourOnes != nullptr, "four ones should expose a multiple option");
+        checker.applyOption(*fourOnes);
+        expect(game.currentPlayer().score().roundScore() == 2000, "four ones should double the base one multiple");
+        expect(game.currentPlayer().dice().numDiceInPlay() == zilch::FULL_SET_OF_DICE, "scoring every die should reset to hot dice");
+        expect(game.currentPlayer().dice().diceSetMap().empty(), "all ones should be consumed");
+        expect(!game.hasSavedMultiple(1), "hot dice should clear the completed multiple chain");
+    }
+}
+
 void testBustAndBankingRules()
 {
     auto game = makeGame();
@@ -176,6 +226,48 @@ void testBustAndBankingRules()
     expect(!game.turnActive(), "banking should end turn");
     expect(game.currentPlayer().score().permanentScore() == 1000, "banking should add permanent score");
     expect(game.currentPlayer().score().roundScore() == 0, "banking should clear round score");
+}
+
+void testGameStateResetAndWinnerLookup()
+{
+    zilch::GameManager emptyGame;
+    expect(emptyGame.highestScoringPlayer() == nullptr, "empty game should have no highest-scoring player");
+    emptyGame.manageDiceCount(3);
+    expect(!emptyGame.canBankCurrentScore(), "empty game should not be bankable after dice management");
+
+    zilch::GameManager game;
+    game.setPlayers({"A", "B", "C"});
+    game.players()[0].score().addPermanentScore(700);
+    game.players()[1].score().addPermanentScore(1200);
+    game.players()[2].score().addPermanentScore(900);
+    const auto* highest = game.highestScoringPlayer();
+    expect(highest != nullptr && highest->name() == "B", "highestScoringPlayer should return the leader");
+
+    game.startTurn(5);
+    expect(game.currentIndex() == 2, "startTurn should wrap out-of-range indexes");
+    game.switchToNextPlayer();
+    expect(game.currentIndex() == 0, "switchToNextPlayer should wrap to the first player");
+
+    game.startTurn(1);
+    game.beginFinalRound();
+    game.startTurn(2);
+    expect(!game.wouldEndAfterCurrentTurn(), "middle final-round player should not end the round");
+    game.startTurn(0);
+    expect(game.wouldEndAfterCurrentTurn(), "last player before the starter should end the final round");
+
+    game.setSavedMultipleScore(5, 400);
+    game.setPlayers({"Only"});
+    expect(game.playerCount() == 1, "resetting players should install the new roster");
+    expect(game.currentIndex() == 0, "resetting players should reset the current index");
+    expect(!game.finalRoundActive(), "resetting players should clear final-round state");
+    expect(!game.turnActive(), "resetting players should clear turn state");
+    expect(!game.hasSavedMultiple(5), "resetting players should clear saved multiple chains");
+
+    game.setPlayers({});
+    expect(game.playerCount() == 0, "empty player reset should clear players");
+    expect(game.highestScoringPlayer() == nullptr, "empty player reset should leave no leader");
+    game.manageDiceCount(4);
+    expect(!game.canBankCurrentScore(), "managing dice without players should remain safe");
 }
 
 void testRuleConfigAndDiceBasics()
@@ -370,7 +462,9 @@ int main()
     try {
         testScoringOptionsAndRuleToggles();
         testMultipleExtensionAndHotDiceReset();
+        testSinglesMultiplesAndHotDiceEdges();
         testBustAndBankingRules();
+        testGameStateResetAndWinnerLookup();
         testRuleConfigAndDiceBasics();
         testPolicyPersistenceValidation();
         testHumanControllerShortcuts();
