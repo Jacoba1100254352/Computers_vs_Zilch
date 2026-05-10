@@ -1,13 +1,160 @@
-#ifndef ZILCH_COMPUTER_H
-#define ZILCH_COMPUTER_H
+#ifndef COMPUTERS_VS_ZILCH_COMPUTER_H
+#define COMPUTERS_VS_ZILCH_COMPUTER_H
 
 #include "zilch.h"
 
+#include <array>
+#include <cstddef>
+#include <iosfwd>
+#include <optional>
 
-class computer : public zilch {
-public:
-    void probability(zilch &);
+namespace zilch {
+
+enum class PostSelectionDecision {
+    SelectAgain,
+    Roll,
+    Bank,
 };
 
+struct Policy {
+    std::string name{"baseline"};
+    std::array<int, 7> bankThresholdByDice{0, 350, 500, 700, 850, 1000, 1150};
+    double scoreWeight{1.0};
+    double remainingDiceWeight{55.0};
+    double hotDiceWeight{240.0};
+    double multipleWeight{95.0};
+    double leadFactor{0.08};
+    double trailFactor{0.10};
+    double closingFactor{0.25};
+    double rollBias{15.0};
+};
 
-#endif //ZILCH_COMPUTER_H
+[[nodiscard]] std::string describePolicy(const Policy& policy);
+bool loadPolicy(const std::string& path, Policy& policy);
+bool savePolicy(const std::string& path, const Policy& policy);
+
+class Controller {
+public:
+    virtual ~Controller() = default;
+    virtual std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) = 0;
+    virtual PostSelectionDecision decideAfterSelection(
+        GameManager& game,
+        const std::vector<ScoringOption>& remainingOptions) = 0;
+};
+
+class HumanController final : public Controller {
+public:
+    HumanController(std::istream& input, std::ostream& output) : input_(input), output_(output) {}
+
+    std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;
+    PostSelectionDecision decideAfterSelection(
+        GameManager& game,
+        const std::vector<ScoringOption>& remainingOptions) override;
+
+private:
+    std::istream& input_;
+    std::ostream& output_;
+    bool autoScoreRemaining_{false};
+};
+
+class ComputerController final : public Controller {
+public:
+    explicit ComputerController(Policy policy) : policy_(std::move(policy)) {}
+
+    std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;
+    PostSelectionDecision decideAfterSelection(
+        GameManager& game,
+        const std::vector<ScoringOption>& remainingOptions) override;
+
+    [[nodiscard]] const Policy& policy() const { return policy_; }
+
+private:
+    [[nodiscard]] double optionUtility(const GameManager& game, const ScoringOption& option) const;
+    [[nodiscard]] double rollUtility(const GameManager& game) const;
+    [[nodiscard]] int bankThreshold(const GameManager& game) const;
+
+    Policy policy_;
+};
+
+struct MatchResult {
+    std::optional<std::size_t> winnerIndex;
+    std::uint32_t winningScore{0};
+    std::vector<std::uint32_t> finalScores;
+};
+
+struct PlayConfig {
+    std::string humanName{"You"};
+    std::uint32_t scoreLimit{5000};
+    std::uint64_t seed{0};
+    std::optional<std::string> policyPath;
+};
+
+bool runHumanVsComputer(const PlayConfig& config);
+
+struct ArenaConfig {
+    std::optional<std::string> policyAPath;
+    std::optional<std::string> policyBPath;
+    std::size_t games{200};
+    std::size_t threads{0};
+    std::uint32_t scoreLimit{5000};
+    std::uint64_t seed{0};
+};
+
+bool runArena(const ArenaConfig& config);
+
+struct TrainingConfig {
+    std::size_t generations{25};
+    std::size_t population{24};
+    std::size_t matchesPerGeneration{240};
+    std::size_t threads{0};
+    std::uint32_t scoreLimit{5000};
+    std::string outputPath{"trained_policy.cfg"};
+    std::uint64_t seed{0};
+    std::optional<std::string> resumePolicyPath;
+};
+
+class Trainer {
+public:
+    struct Stats {
+        double matchPoints{0.0};
+        std::uint64_t wins{0};
+        std::uint64_t ties{0};
+        std::uint64_t games{0};
+        std::uint64_t pointsFor{0};
+        std::uint64_t pointsAgainst{0};
+    };
+
+    explicit Trainer(TrainingConfig config);
+
+    Policy train(std::ostream& output);
+
+private:
+    struct Candidate {
+        Policy policy;
+        Stats stats;
+        double fitness{0.0};
+    };
+
+    struct SeriesResult {
+        MatchResult firstSeat;
+        MatchResult secondSeat;
+    };
+
+    [[nodiscard]] std::vector<Candidate> buildInitialPopulation();
+    void evaluatePopulation(std::vector<Candidate>& population);
+    [[nodiscard]] MatchResult playComputerMatch(const Policy& first, const Policy& second, std::uint64_t seed) const;
+    [[nodiscard]] SeriesResult playMirroredSeries(
+        const Policy& first,
+        const Policy& second,
+        std::uint64_t seed) const;
+    [[nodiscard]] Policy mutate(const Policy& parent, std::size_t generation, std::size_t index);
+    [[nodiscard]] Policy crossover(const Policy& lhs, const Policy& rhs, std::size_t generation, std::size_t index);
+    [[nodiscard]] static double computeFitness(const Stats& stats);
+
+    TrainingConfig config_;
+    std::mt19937_64 seedRng_;
+};
+
+} // namespace zilch
+
+#endif

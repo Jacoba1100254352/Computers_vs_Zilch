@@ -1,155 +1,164 @@
-#include "zilch.h"
 #include "computer.h"
 
-/*
-* Should I use 2-3 objects, one for general play variables, a list of objects for each player with their info? Maybe one for dice info?
-*
-* When using get functions in for loops assign them to a variable to avoid multiple calls
-*/
+#include <algorithm>
+#include <exception>
+#include <iostream>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 
-void setUpGame(zilch &);
-void playGame(zilch &);
+namespace {
 
-using namespace std;
-
-int main() {
-    /******************
-    *   Set Up Game   *
-    ******************/
-    zilch game;
-    setUpGame(game);
-
-    /*********************************
-    *   Rolling and Scoring people   *
-    *********************************/
-    playGame(game);
-
-    return 0;
+void printUsage()
+{
+    std::cout
+        << "Usage:\n"
+        << "  ./zilch play [--name NAME] [--score-limit N] [--policy PATH] [--seed N]\n"
+        << "  ./zilch arena [--policy-a PATH] [--policy-b PATH] [--games N] [--threads N]\n"
+        << "                 [--score-limit N] [--seed N]\n"
+        << "  ./zilch train [--generations N] [--population N] [--matches N] [--threads N]\n"
+        << "                [--score-limit N] [--output PATH] [--resume PATH] [--seed N]\n"
+        << "\n"
+        << "Notes: score limits must be at least 1000; arena games and training matches must be even.\n";
 }
 
-void setUpGame(zilch &game)
+std::map<std::string, std::string> parseOptions(const int argc, char* argv[], const int startIndex)
 {
-    /************************************
-    *   Setting objects and variables   *
-    ************************************/
-    ///   Variable Defaults   ///
-    const unsigned FULL_SET_OF_DICE = 6;
-    unsigned numPlayers = 2;
-    unsigned scoreLimit = 5000;
-    string player;
+    std::map<std::string, std::string> options;
 
-    /***************
-    *   Welcome!   *
-    ***************/
-    zilch::clear();
-    cout << "Welcome to Zilch!\n" << endl
-         << "Here are the basic rules:" << endl
-         << "You must score an initial 1000 points to start logging your points" << endl
-         << "Sets (three sets of two) and straits (1, 2, 3, 4, 5, 6) give 1000 points" << endl
-         << "A group of 3 dice give you 100 points times the value of that die, for example:" << endl
-         << "\ta roll of 3 3 3 will give you 300 points" << endl
-         << "\tan exception is made for 1 1 1 which will give you 1000 points" << endl
-         << "Each additional number added to this group of three doubles the points received from it, for example:" << endl
-         << "\ta roll of 3 3 3 3 or a roll of 3 3 3 and a later roll of 3 in the same turn would give you 600 points" << endl
-         << "\tthe same applies to a group of 3 1's, 2 more 1's are rolled the score would be 1000*2*2 = 4000" << endl
-         << "Finally, only single 1's or 5's are worth points with a single 1 being 100 points and a 5 being 50." << endl;
-    zilch::pauseAndContinue(game);
+    for (int index = startIndex; index < argc; ++index) {
+        std::string key = argv[index];
+        if (!key.starts_with("--"))
+            throw std::invalid_argument("Unexpected argument: " + key);
 
-    /*************************
-    *   Setting up players   *
-    *************************/
-    ///   Input score limit and failsafe   ///
-    cout << "A minimum score of 1000 is needed to play the game," << endl
-         << "but a score of 5000 or more being recommended.\n" << endl
-         << "Enter the desired score limit: " << flush;
-    cin >> scoreLimit;
+        key.erase(0, 2);
+        if (options.contains(key))
+            throw std::invalid_argument("Duplicate option: --" + key);
 
-    ///   Verify a valid input   ///
-    while (cin.fail() || scoreLimit < 1000) {
-        zilch::clear();
-        cout << "Enter the desired score limit: ";
-        cin.clear();
-        cin.ignore(numeric_limits<int>::max(), '\n');
-        cin >> scoreLimit;
+        if (index + 1 < argc && !std::string(argv[index + 1]).starts_with("--")) {
+            options[key] = argv[++index];
+        } else {
+            options[key] = "true";
+        }
     }
 
-
-    ///   Input amount of players and failsafe   ///
-    cout << "Enter the amount of people who are playing: " << flush;
-    cin >> numPlayers;
-
-    ///   Verify a valid input   ///
-    while (cin.fail() || numPlayers == 0) {
-        system("clear");
-        cout << "A minimum score of 1000 is needed to play the game," << endl
-             << "but a score of 5000 or more being recommended.\n" << endl
-             << "Enter the desired score limit: " << scoreLimit;
-        cout << "\nEnter the amount of people who are playing: " << flush;
-        cin.clear();
-        cin.ignore(numeric_limits<int>::max(), '\n');
-        cin >> numPlayers;
-    }
-
-
-    ///   Initialize play   ///
-    game.setScoreLimit(scoreLimit);                   // Score limit
-    game.setAmountOfPlayers(numPlayers);
-    game.setNumOfDiceInPlay(FULL_SET_OF_DICE);  // Full set of dice
-
-
-    ///   Input Players   ///
-    for (unsigned i = 0; i < numPlayers; i++) {
-        (i == 0) ? cout << "\nInput your first player: " << flush : cout << "Input your next player: " << flush;
-        cin >> player;
-
-        game.setPlayer(i, player);
-        game.setTurnScores(0);                  // Each Player has a Starting Turn, Singles, and Multiples Score of 0
-        game.setPermanentScore(0, true);   // Each Player has a Starting Score of 0
-    }
-    game.setCurrentPlayer(game.getPlayer(0));
-    game.initializeMaps();
-
-
-    ///   Output Player Names and Scores   ///
-    cout << "\nYour players are:" << endl;
-    for (unsigned i = 0; i < numPlayers; i++)
-        cout << game.getPlayer(i) << "\tStarting Score: " << game.getRunningScore() << endl << flush;
-
-    zilch::pauseAndContinue(game);
-    zilch::clear();
+    return options;
 }
 
-void playGame(zilch &game)
+template <typename T>
+T parseUnsigned(
+    const std::map<std::string, std::string>& options,
+    const std::string& key,
+    const T fallback,
+    const T minimum,
+    const T maximum = std::numeric_limits<T>::max())
 {
-    const unsigned FULL_SET_OF_DICE = 6;
+    if (const auto it = options.find(key); it != options.end()) {
+        if (it->second.empty() || it->second.front() == '-' || it->second.front() == '+')
+            throw std::invalid_argument("Invalid numeric value for --" + key + ": " + it->second);
+        std::size_t parsed = 0;
+        const auto value = std::stoull(it->second, &parsed);
+        if (parsed != it->second.size())
+            throw std::invalid_argument("Invalid numeric value for --" + key + ": " + it->second);
+        if (value < minimum || value > maximum)
+            throw std::invalid_argument("Value out of range for --" + key + ": " + it->second);
+        return static_cast<T>(value);
+    }
+    return fallback;
+}
 
-    while (!game.winBool()) {
-        game.setContinueTurnBool(true);
-        while (game.getContinueTurnBool() && (game.getPermanentScore(game.getCurrentPlayer()) < game.getScoreLimit()))
-            zilch::rollSixDice(game);
+void rejectUnknownOptions(
+    const std::map<std::string, std::string>& options,
+    const std::initializer_list<std::string_view> allowed)
+{
+    for (const auto& [key, value] : options) {
+        (void)value;
+        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end())
+            throw std::invalid_argument("Unknown option: --" + key);
+    }
+}
 
-        ///   Player Exceeded Score Limit   ///
-        if (game.getPermanentScore(game.getCurrentPlayer()) >= game.getScoreLimit())
-            break;
+} // namespace
 
-        ///   Continue to next player   ///
-        game.incCurrentPlayer(); // Also sets continueTurnBool to true
-        cout << "\nIt is " << game.getCurrentPlayer() << "'s turn" << endl;
-        game.setNumOfDiceInPlay(FULL_SET_OF_DICE);
-
-        ///   Print all players' scores   ///
-        for (unsigned i = 0; i < game.getAmountOfPlayers(); i++)
-            cout << game.getPlayer(i) << "\tCurrent Score: " << game.getPermanentScore(game.getPlayer(i)) << endl << flush;
-        zilch::pauseAndContinue(game);
+int main(const int argc, char* argv[])
+{
+    if (argc < 2) {
+        printUsage();
+        return 1;
     }
 
-    ///   Last Turn Function   ///
-    zilch::lastTurnOpportunity(game, FULL_SET_OF_DICE);
+    const std::string command = argv[1];
+    if (command == "--help" || command == "help") {
+        printUsage();
+        return 0;
+    }
 
-    ///   Prints Ending Score of each player   ///
-    for (unsigned i = 0; i < game.getAmountOfPlayers(); i++)
-        cout << game.getPlayer(i) << "\tFinal Score: " << game.getPermanentScore(game.getPlayer(i)) << endl;
+    try {
+        const auto options = parseOptions(argc, argv, 2);
 
-    ///   Tie and Game End Function   ///
-    zilch::tiedEnding(game);
+        if (command == "play") {
+            rejectUnknownOptions(options, {"name", "score-limit", "policy", "seed"});
+            zilch::PlayConfig config;
+            if (const auto it = options.find("name"); it != options.end())
+                config.humanName = it->second;
+            if (const auto it = options.find("policy"); it != options.end())
+                config.policyPath = it->second;
+
+            config.scoreLimit = parseUnsigned<std::uint32_t>(
+                options, "score-limit", config.scoreLimit, 1000);
+            config.seed = parseUnsigned<std::uint64_t>(options, "seed", config.seed, 0);
+
+            return zilch::runHumanVsComputer(config) ? 0 : 1;
+        }
+
+        if (command == "train") {
+            rejectUnknownOptions(
+                options,
+                {"generations", "population", "matches", "threads", "score-limit", "output", "resume", "seed"});
+            zilch::TrainingConfig config;
+            if (const auto it = options.find("output"); it != options.end())
+                config.outputPath = it->second;
+            if (const auto it = options.find("resume"); it != options.end())
+                config.resumePolicyPath = it->second;
+
+            config.generations = parseUnsigned<std::size_t>(options, "generations", config.generations, 1);
+            config.population = parseUnsigned<std::size_t>(options, "population", config.population, 4);
+            config.matchesPerGeneration =
+                parseUnsigned<std::size_t>(options, "matches", config.matchesPerGeneration, 2);
+            config.threads = parseUnsigned<std::size_t>(options, "threads", config.threads, 0, 1024);
+            config.scoreLimit = parseUnsigned<std::uint32_t>(
+                options, "score-limit", config.scoreLimit, 1000);
+            config.seed = parseUnsigned<std::uint64_t>(options, "seed", config.seed, 0);
+
+            zilch::Trainer trainer(config);
+            const auto bestPolicy = trainer.train(std::cout);
+            std::cout << "Best policy:\n" << zilch::describePolicy(bestPolicy) << '\n';
+            return 0;
+        }
+
+        if (command == "arena") {
+            rejectUnknownOptions(options, {"policy-a", "policy-b", "games", "threads", "score-limit", "seed"});
+            zilch::ArenaConfig config;
+            if (const auto it = options.find("policy-a"); it != options.end())
+                config.policyAPath = it->second;
+            if (const auto it = options.find("policy-b"); it != options.end())
+                config.policyBPath = it->second;
+
+            config.games = parseUnsigned<std::size_t>(options, "games", config.games, 2);
+            config.threads = parseUnsigned<std::size_t>(options, "threads", config.threads, 0, 1024);
+            config.scoreLimit = parseUnsigned<std::uint32_t>(
+                options, "score-limit", config.scoreLimit, 1000);
+            config.seed = parseUnsigned<std::uint64_t>(options, "seed", config.seed, 0);
+
+            return zilch::runArena(config) ? 0 : 1;
+        }
+
+        printUsage();
+        return 1;
+    } catch (const std::exception& exception) {
+        std::cerr << exception.what() << '\n';
+        return 1;
+    }
 }
