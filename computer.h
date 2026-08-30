@@ -16,6 +16,11 @@ enum class PostSelectionDecision {
     Bank,
 };
 
+enum class TurnStartDecision {
+    FreshRoll,
+    AcceptSteal,
+};
+
 struct Policy {
     std::string name{"baseline"};
     std::array<int, 7> bankThresholdByDice{0, 350, 500, 700, 850, 1000, 1150};
@@ -36,6 +41,7 @@ bool savePolicy(const std::string& path, const Policy& policy);
 class Controller {
 public:
     virtual ~Controller() = default;
+    virtual TurnStartDecision decideTurnStart(GameManager& game) = 0;
     virtual std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) = 0;
     virtual PostSelectionDecision decideAfterSelection(
         GameManager& game,
@@ -46,6 +52,7 @@ class HumanController final : public Controller {
 public:
     HumanController(std::istream& input, std::ostream& output) : input_(input), output_(output) {}
 
+    TurnStartDecision decideTurnStart(GameManager& game) override;
     std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;
     PostSelectionDecision decideAfterSelection(
         GameManager& game,
@@ -61,6 +68,7 @@ class ComputerController final : public Controller {
 public:
     explicit ComputerController(Policy policy) : policy_(std::move(policy)) {}
 
+    TurnStartDecision decideTurnStart(GameManager& game) override;
     std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;
     PostSelectionDecision decideAfterSelection(
         GameManager& game,
@@ -87,6 +95,7 @@ struct PlayConfig {
     std::uint32_t scoreLimit{5000};
     std::uint64_t seed{0};
     std::optional<std::string> policyPath;
+    RuleConfig ruleConfig;
 };
 
 bool runHumanVsComputer(const PlayConfig& config);
@@ -98,6 +107,7 @@ struct ArenaConfig {
     std::size_t threads{0};
     std::uint32_t scoreLimit{5000};
     std::uint64_t seed{0};
+    RuleConfig ruleConfig;
 };
 
 bool runArena(const ArenaConfig& config);
@@ -111,6 +121,7 @@ struct TrainingConfig {
     std::string outputPath{"trained_policy.cfg"};
     std::uint64_t seed{0};
     std::optional<std::string> resumePolicyPath;
+    RuleConfig ruleConfig;
 };
 
 class Trainer {

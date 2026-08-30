@@ -1,6 +1,8 @@
 #include "computer.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -21,8 +23,27 @@ void printUsage()
         << "  ./zilch train [--generations N] [--population N] [--matches N] [--threads N]\n"
         << "                [--score-limit N] [--output PATH] [--resume PATH] [--seed N]\n"
         << "\n"
-        << "Notes: score limits must be at least 1000; arena games and training matches must be even.\n";
+        << "Common rule options for play, arena, and train:\n"
+        << "  --score-limit N --opening-score N\n"
+        << "  --straight BOOL --three-pairs BOOL --multiples BOOL --singles BOOL\n"
+        << "  --first-roll-bust BOOL --final-chase BOOL --allow-ties BOOL --stealing BOOL\n"
+        << "  BOOL accepts on/off, true/false, yes/no, enabled/disabled, or 1/0.\n"
+        << "Notes: score limits must be at least 1000; opening score cannot exceed the score limit;\n"
+        << "       arena games and training matches must be even.\n";
 }
+
+inline constexpr std::array<std::string_view, 10> COMMON_OPTIONS{
+    "score-limit",
+    "opening-score",
+    "straight",
+    "three-pairs",
+    "multiples",
+    "singles",
+    "first-roll-bust",
+    "final-chase",
+    "allow-ties",
+    "stealing",
+};
 
 std::map<std::string, std::string> parseOptions(const int argc, char* argv[], const int startIndex)
 {
@@ -75,9 +96,55 @@ void rejectUnknownOptions(
 {
     for (const auto& [key, value] : options) {
         (void)value;
-        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end())
+        if (std::ranges::find(COMMON_OPTIONS, key) == COMMON_OPTIONS.end() &&
+            std::ranges::find(allowed, key) == allowed.end()) {
             throw std::invalid_argument("Unknown option: --" + key);
+        }
     }
+}
+
+bool parseBoolean(const std::map<std::string, std::string>& options, const std::string& key, const bool fallback)
+{
+    const auto it = options.find(key);
+    if (it == options.end())
+        return fallback;
+
+    std::string normalized = it->second;
+    std::ranges::transform(normalized, normalized.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+
+    if (normalized == "on" || normalized == "true" || normalized == "yes" || normalized == "enabled" ||
+        normalized == "1") {
+        return true;
+    }
+    if (normalized == "off" || normalized == "false" || normalized == "no" || normalized == "disabled" ||
+        normalized == "0") {
+        return false;
+    }
+
+    throw std::invalid_argument("Invalid boolean value for --" + key + ": " + it->second);
+}
+
+void applyCommonRuleOptions(
+    const std::map<std::string, std::string>& options,
+    const std::uint32_t scoreLimit,
+    zilch::RuleConfig& ruleConfig)
+{
+    ruleConfig.setOpeningScoreLimit(parseUnsigned<std::uint32_t>(
+        options, "opening-score", ruleConfig.openingScoreLimit(), 0, scoreLimit));
+    ruleConfig.setStraightEnabled(parseBoolean(options, "straight", ruleConfig.straightEnabled()));
+    ruleConfig.setThreePairsEnabled(parseBoolean(options, "three-pairs", ruleConfig.threePairsEnabled()));
+    ruleConfig.setMultiplesEnabled(parseBoolean(options, "multiples", ruleConfig.multiplesEnabled()));
+    ruleConfig.setSinglesEnabled(parseBoolean(options, "singles", ruleConfig.singlesEnabled()));
+    ruleConfig.setFirstRollBustBonusEnabled(
+        parseBoolean(options, "first-roll-bust", ruleConfig.firstRollBustBonusEnabled()));
+    ruleConfig.setFinalChaseEnabled(parseBoolean(options, "final-chase", ruleConfig.finalChaseEnabled()));
+    ruleConfig.setAllowTies(parseBoolean(options, "allow-ties", ruleConfig.tiesAllowed()));
+    ruleConfig.setStealingEnabled(parseBoolean(options, "stealing", ruleConfig.stealingEnabled()));
+
+    if (!ruleConfig.hasScoringRuleEnabled())
+        throw std::invalid_argument("At least one scoring rule must be enabled.");
 }
 
 } // namespace
@@ -99,7 +166,7 @@ int main(const int argc, char* argv[])
         const auto options = parseOptions(argc, argv, 2);
 
         if (command == "play") {
-            rejectUnknownOptions(options, {"name", "score-limit", "policy", "seed"});
+            rejectUnknownOptions(options, {"name", "policy", "seed"});
             zilch::PlayConfig config;
             if (const auto it = options.find("name"); it != options.end())
                 config.humanName = it->second;
@@ -109,6 +176,7 @@ int main(const int argc, char* argv[])
             config.scoreLimit = parseUnsigned<std::uint32_t>(
                 options, "score-limit", config.scoreLimit, 1000);
             config.seed = parseUnsigned<std::uint64_t>(options, "seed", config.seed, 0);
+            applyCommonRuleOptions(options, config.scoreLimit, config.ruleConfig);
 
             return zilch::runHumanVsComputer(config) ? 0 : 1;
         }
@@ -116,7 +184,7 @@ int main(const int argc, char* argv[])
         if (command == "train") {
             rejectUnknownOptions(
                 options,
-                {"generations", "population", "matches", "threads", "score-limit", "output", "resume", "seed"});
+                {"generations", "population", "matches", "threads", "output", "resume", "seed"});
             zilch::TrainingConfig config;
             if (const auto it = options.find("output"); it != options.end())
                 config.outputPath = it->second;
@@ -131,6 +199,7 @@ int main(const int argc, char* argv[])
             config.scoreLimit = parseUnsigned<std::uint32_t>(
                 options, "score-limit", config.scoreLimit, 1000);
             config.seed = parseUnsigned<std::uint64_t>(options, "seed", config.seed, 0);
+            applyCommonRuleOptions(options, config.scoreLimit, config.ruleConfig);
 
             zilch::Trainer trainer(config);
             const auto bestPolicy = trainer.train(std::cout);
@@ -139,7 +208,7 @@ int main(const int argc, char* argv[])
         }
 
         if (command == "arena") {
-            rejectUnknownOptions(options, {"policy-a", "policy-b", "games", "threads", "score-limit", "seed"});
+            rejectUnknownOptions(options, {"policy-a", "policy-b", "games", "threads", "seed"});
             zilch::ArenaConfig config;
             if (const auto it = options.find("policy-a"); it != options.end())
                 config.policyAPath = it->second;
@@ -151,6 +220,7 @@ int main(const int argc, char* argv[])
             config.scoreLimit = parseUnsigned<std::uint32_t>(
                 options, "score-limit", config.scoreLimit, 1000);
             config.seed = parseUnsigned<std::uint64_t>(options, "seed", config.seed, 0);
+            applyCommonRuleOptions(options, config.scoreLimit, config.ruleConfig);
 
             return zilch::runArena(config) ? 0 : 1;
         }

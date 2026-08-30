@@ -39,15 +39,28 @@ $output"
 
 output="$(expect_success "$BIN" --help)"
 contains "$output" "Usage:"
+contains "$output" "--opening-score"
+contains "$output" "--stealing BOOL"
 
 output="$(expect_success "$BIN" arena --games 2 --threads 1 --seed 1 --score-limit 1000)"
 contains "$output" "Policy A win rate: 0.500"
 contains "$output" "avg margin=0.0"
 
+output="$(expect_success "$BIN" arena --games 2 --threads 1 --seed 2 --score-limit 1000 \
+    --opening-score 0 --straight off --three-pairs false --multiples on --singles true \
+    --first-roll-bust disabled --final-chase no --allow-ties 0 --stealing enabled)"
+contains "$output" "Policy A win rate: 0.500"
+
 expect_failure "Value out of range for --games" "$BIN" arena --games 1 --threads 1 --seed 1 --score-limit 1000
 expect_failure "Invalid numeric value for --games" "$BIN" arena --games -2 --threads 1 --seed 1 --score-limit 1000
 expect_failure "Unknown option: --bogus" "$BIN" arena --bogus true
 expect_failure "Value out of range for --score-limit" "$BIN" play --score-limit 999
+expect_failure "Value out of range for --opening-score" "$BIN" arena --games 2 --score-limit 1000 --opening-score 1001
+expect_failure "Value out of range for --opening-score" "$BIN" play --score-limit 1000 --opening-score 1001
+expect_failure "Invalid boolean value for --stealing" "$BIN" arena --games 2 --stealing maybe
+expect_failure "Invalid boolean value for --final-chase" "$BIN" train --final-chase maybe
+expect_failure "At least one scoring rule must be enabled" "$BIN" arena --games 2 \
+    --straight off --three-pairs off --multiples off --singles off
 
 blank_policy="$(mktemp "${TMPDIR:-/tmp}/zilch_blank_policy.XXXXXX")"
 : > "$blank_policy"
@@ -75,12 +88,17 @@ expect_failure "Failed to save policy" "$BIN" train --generations 1 --population
 expect_failure "Failed to load resume policy" "$BIN" train --generations 1 --population 4 --matches 8 --threads 2 --score-limit 1000 --resume "${TMPDIR:-/tmp}/zilch_missing_resume.cfg" --output "${TMPDIR:-/tmp}/zilch_unused_policy.cfg" --seed 3
 
 trained_policy="$(mktemp "${TMPDIR:-/tmp}/zilch_trained_policy.XXXXXX")"
-output="$(expect_success "$BIN" train --generations 1 --population 4 --matches 8 --threads 2 --score-limit 1000 --output "$trained_policy" --seed 11)"
+output="$(expect_success "$BIN" train --generations 1 --population 4 --matches 8 --threads 2 \
+    --score-limit 1000 --opening-score 0 --stealing on --allow-ties true \
+    --output "$trained_policy" --seed 11)"
 contains "$output" "Saved best policy to"
 test -s "$trained_policy" || fail "expected train command to write a policy"
 rm -f "$trained_policy"
 
-output="$(printf '' | "$BIN" play --seed 5 --score-limit 1000 --policy "$POLICY" 2>&1)" || fail "play should exit cleanly on closed input"
+output="$(printf '' | "$BIN" play --seed 5 --score-limit 1000 --opening-score 0 \
+    --straight true --three-pairs on --multiples yes --singles enabled \
+    --first-roll-bust true --final-chase on --allow-ties yes --stealing off \
+    --policy "$POLICY" 2>&1)" || fail "play should exit cleanly on closed input"
 contains "$output" "Input stream closed. Exiting Zilch."
 
 echo "CLI regression checks passed."

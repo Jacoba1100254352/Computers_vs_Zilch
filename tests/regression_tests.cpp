@@ -45,6 +45,28 @@ void setDice(zilch::GameManager& game, const std::initializer_list<std::uint16_t
         ++playerDice.diceSetMap()[die];
 }
 
+void prepareStealOffer(
+    zilch::GameManager& game,
+    const std::uint32_t roundScore,
+    const std::uint16_t diceCount,
+    const bool recipientIsOn)
+{
+    game.ruleConfig().setStealingEnabled(true);
+    game.players()[0].score().addPermanentScore(1000);
+    if (recipientIsOn)
+        game.players()[1].score().addPermanentScore(1000);
+
+    game.currentPlayer().score().addRoundScore(roundScore);
+    game.currentPlayer().dice().setNumDiceInPlay(diceCount);
+    game.setSavedMultipleScore(1, 2000);
+    game.setSavedMultipleScore(5, 1000);
+    game.registerRoll();
+    game.setSelectedOption(true);
+    game.bankCurrentScore();
+    game.switchToNextPlayer();
+    game.startTurn(game.currentIndex());
+}
+
 const zilch::ScoringOption* findOption(
     const std::vector<zilch::ScoringOption>& options,
     const zilch::OptionType type,
@@ -228,6 +250,89 @@ void testBustAndBankingRules()
     expect(game.currentPlayer().score().roundScore() == 0, "banking should clear round score");
 }
 
+void testStealingCarriesStateAndChains()
+{
+    auto game = makeGame();
+    prepareStealOffer(game, 300, 3, true);
+
+    expect(game.hasStealOfferForCurrentPlayer(), "the immediately following player should receive the offer");
+    expect(game.canCurrentPlayerSteal(), "a player already on the board should be eligible to steal");
+    expect(game.stealOfferScore() == 300, "the offer should carry the banked round score");
+    expect(game.stealOfferDiceCount() == 3, "the offer should carry the unrolled dice count");
+    expect(game.acceptStealOffer(), "an eligible player should be able to accept the offer");
+    expect(game.stealContinuationActive(), "accepting should activate the continuation");
+    expect(game.currentPlayer().score().roundScore() == 300, "accepting should copy the carried round score");
+    expect(game.currentPlayer().dice().numDiceInPlay() == 3, "accepting should restore the carried dice count");
+    expect(game.savedMultipleScore(1) == 2000, "accepting should restore the saved ones chain");
+    expect(game.savedMultipleScore(5) == 1000, "accepting should restore the full saved-multiple map");
+
+    game.currentPlayer().score().addRoundScore(150);
+    game.currentPlayer().dice().setNumDiceInPlay(2);
+    game.registerRoll();
+    game.setSelectedOption(true);
+    game.bankCurrentScore();
+    expect(game.currentPlayer().score().permanentScore() == 1450, "a continued score should bank normally");
+
+    game.switchToNextPlayer();
+    game.startTurn(game.currentIndex());
+    expect(game.hasStealOfferForCurrentPlayer(), "a successfully banked continuation should chain");
+    expect(game.stealOfferScore() == 450, "a chained offer should carry the enlarged round score");
+    expect(game.stealOfferDiceCount() == 2, "a chained offer should carry its remaining dice");
+}
+
+void testStealingEligibilityDeclineAndTermination()
+{
+    {
+        auto game = makeGame();
+        prepareStealOffer(game, 250, 4, false);
+
+        expect(game.hasStealOfferForCurrentPlayer(), "an off-board recipient should see the immediate offer context");
+        expect(!game.canCurrentPlayerSteal(), "carried points must not put a player on the board");
+        expect(!game.acceptStealOffer(), "an ineligible recipient must not accept");
+        game.declineStealOffer();
+        expect(!game.hasStealOfferForCurrentPlayer(), "declining should clear the offer");
+        expect(!game.stealContinuationActive(), "declining should leave no active continuation");
+        expect(game.currentPlayer().score().roundScore() == 0, "declining should clear inherited points");
+        expect(game.currentPlayer().dice().numDiceInPlay() == zilch::FULL_SET_OF_DICE,
+               "declining should restore six fresh dice");
+        expect(!game.hasSavedMultiple(1) && !game.hasSavedMultiple(5),
+               "declining should clear all inherited multiple state");
+    }
+
+    {
+        auto game = makeGame();
+        prepareStealOffer(game, 300, 3, true);
+        expect(game.acceptStealOffer(), "the prepared hot-dice continuation should be accepted");
+        game.manageDiceCount(0);
+        expect(!game.stealContinuationActive(), "hot dice should end a steal continuation");
+        expect(!game.hasSavedMultiple(1) && !game.hasSavedMultiple(5),
+               "hot dice should clear inherited multiple state");
+    }
+
+    {
+        auto game = makeGame();
+        prepareStealOffer(game, 300, 3, true);
+        expect(game.acceptStealOffer(), "the prepared bust continuation should be accepted");
+        game.registerRoll();
+        setDice(game, {2, 3, 4});
+        zilch::Checker checker(game);
+        expect(!checker.hasAvailableOption(), "the accepted continuation should have a bust hand");
+        checker.handleBust();
+        expect(game.currentPlayer().score().roundScore() == 0, "a steal bust should lose the carried score");
+        expect(game.bustPending(), "a steal bust should end the turn as a bust");
+        expect(!game.bustBonusUsedThisTurn(), "first-roll bust must not rescue an accepted continuation");
+        expect(!game.stealContinuationActive(), "a bust should end the steal chain");
+    }
+
+    {
+        auto game = makeGame();
+        prepareStealOffer(game, 300, 3, true);
+        game.ruleConfig().setStealingEnabled(false);
+        game.startTurn(game.currentIndex());
+        expect(!game.hasStealOfferForCurrentPlayer(), "disabling stealing should clear a pending offer");
+    }
+}
+
 void testGameStateResetAndWinnerLookup()
 {
     zilch::GameManager emptyGame;
@@ -250,9 +355,16 @@ void testGameStateResetAndWinnerLookup()
 
     game.startTurn(1);
     game.beginFinalRound();
+    expect(game.finalRoundLeaderIndex() == 1, "the player starting the final round should be incumbent leader");
     game.startTurn(2);
+    game.currentPlayer().score().addPermanentScore(300);
+    game.updateFinalRoundLeaderForCurrentPlayer();
+    expect(game.finalRoundLeaderIndex() == 1, "tying the incumbent should not replace them");
     expect(!game.wouldEndAfterCurrentTurn(), "middle final-round player should not end the round");
     game.startTurn(0);
+    game.currentPlayer().score().addPermanentScore(600);
+    game.updateFinalRoundLeaderForCurrentPlayer();
+    expect(game.finalRoundLeaderIndex() == 0, "beating the incumbent should establish a new leader");
     expect(game.wouldEndAfterCurrentTurn(), "last player before the starter should end the final round");
 
     game.setSavedMultipleScore(5, 400);
@@ -273,13 +385,43 @@ void testGameStateResetAndWinnerLookup()
 void testRuleConfigAndDiceBasics()
 {
     zilch::RuleConfig config;
+    expect(config.straightEnabled() && config.straitsEnabled(), "straight aliases should be enabled by default");
+    expect(config.threePairsEnabled() && config.setsEnabled(), "three-pairs aliases should be enabled by default");
+    expect(config.multiplesEnabled() && config.singlesEnabled(), "multiples and singles should be enabled by default");
+    expect(config.firstRollBustBonusEnabled(), "first-roll bust should be enabled by default");
+    expect(config.finalChaseEnabled(), "final chase should be enabled by default");
+    expect(config.tiesAllowed(), "ties should be allowed by default");
+    expect(!config.stealingEnabled(), "stealing should be disabled by default");
+    expect(config.openingScoreLimit() == 1000 && config.getOpeningScoreLimit() == 1000,
+           "opening-score aliases should default to 1000");
     expect(config.bankThreshold() == 1000, "default bank threshold should be 1000");
     config.adjustBankThreshold(-2000);
     expect(config.bankThreshold() == 0, "bank threshold should not underflow below zero");
     config.adjustBankThreshold(250);
     expect(config.getBankThreshold() == 250, "bank threshold aliases should agree");
+    config.setOpeningScoreLimit(500);
+    expect(config.getBankThreshold() == 500, "opening score should retain bank-threshold compatibility");
+    config.adjustOpeningScoreLimit(250);
+    expect(config.getOpeningScoreLimit() == 750, "opening-score adjustment should share bank-threshold state");
     config.toggleAllowTies();
     expect(!config.tiesAllowed(), "tie toggle should flip tiesAllowed");
+    config.toggleStealing();
+    expect(config.stealingEnabled(), "stealing toggle should enable the optional variant");
+
+    const zilch::PlayConfig playConfig;
+    const zilch::ArenaConfig arenaConfig;
+    const zilch::TrainingConfig trainingConfig;
+    expect(playConfig.scoreLimit == 5000 && arenaConfig.scoreLimit == 5000 && trainingConfig.scoreLimit == 5000,
+           "play, arena, and training should share the 5000-point winning default");
+    expect(
+        playConfig.ruleConfig.openingScoreLimit() == 1000 &&
+            arenaConfig.ruleConfig.openingScoreLimit() == 1000 &&
+            trainingConfig.ruleConfig.openingScoreLimit() == 1000,
+        "play, arena, and training should share the 1000-point opening default");
+    expect(
+        !playConfig.ruleConfig.stealingEnabled() && !arenaConfig.ruleConfig.stealingEnabled() &&
+            !trainingConfig.ruleConfig.stealingEnabled(),
+        "play, arena, and training should share the stealing-off default");
 
     zilch::Dice dice;
     dice.setNumDiceInPlay(9);
@@ -410,6 +552,29 @@ void testHumanControllerShortcuts()
     std::ostringstream retryOutput;
     zilch::HumanController retryHuman(retryInput, retryOutput);
     expect(retryHuman.chooseOption(game, options) == 0, "human input should retry invalid options");
+
+    auto stealGame = makeGame();
+    prepareStealOffer(stealGame, 300, 3, true);
+    std::stringstream turnStartInput("bad\nsteal\n");
+    std::ostringstream turnStartOutput;
+    zilch::HumanController turnStartHuman(turnStartInput, turnStartOutput);
+    expect(
+        turnStartHuman.decideTurnStart(stealGame) == zilch::TurnStartDecision::AcceptSteal,
+        "human turn-start input should support accepting a steal");
+    expect(
+        turnStartOutput.str().find("Invalid turn-start action") != std::string::npos,
+        "human turn-start input should retry invalid actions");
+
+    zilch::ComputerController computer({});
+    expect(
+        computer.decideTurnStart(stealGame) == zilch::TurnStartDecision::AcceptSteal,
+        "the baseline AI should accept a valuable continuation deterministically");
+
+    auto lowValueStealGame = makeGame();
+    prepareStealOffer(lowValueStealGame, 50, 1, true);
+    expect(
+        computer.decideTurnStart(lowValueStealGame) == zilch::TurnStartDecision::FreshRoll,
+        "the baseline AI should decline a low-value continuation deterministically");
 }
 
 void testTrainerAndArenaValidation()
@@ -430,6 +595,17 @@ void testTrainerAndArenaValidation()
     config = {};
     config.scoreLimit = 999;
     expectThrows([&]() { zilch::Trainer trainer(config); }, "low training score limit");
+
+    config = {};
+    config.ruleConfig.setOpeningScoreLimit(config.scoreLimit + 1);
+    expectThrows([&]() { zilch::Trainer trainer(config); }, "opening score above winning score");
+
+    config = {};
+    config.ruleConfig.setStraightEnabled(false);
+    config.ruleConfig.setThreePairsEnabled(false);
+    config.ruleConfig.setMultiplesEnabled(false);
+    config.ruleConfig.setSinglesEnabled(false);
+    expectThrows([&]() { zilch::Trainer trainer(config); }, "profile without a scoring rule");
 
     config = {};
     config.generations = 1;
@@ -453,6 +629,14 @@ void testTrainerAndArenaValidation()
     arena.games = 2;
     arena.scoreLimit = 999;
     expect(!zilch::runArena(arena), "low arena score limit should fail");
+    arena.scoreLimit = 5000;
+    arena.ruleConfig.setOpeningScoreLimit(5001);
+    expect(!zilch::runArena(arena), "arena opening score above the winning score should fail");
+
+    zilch::PlayConfig play;
+    play.scoreLimit = 1000;
+    play.ruleConfig.setOpeningScoreLimit(1001);
+    expect(!zilch::runHumanVsComputer(play), "play opening score above the winning score should fail before input");
 }
 
 } // namespace
@@ -464,6 +648,8 @@ int main()
         testMultipleExtensionAndHotDiceReset();
         testSinglesMultiplesAndHotDiceEdges();
         testBustAndBankingRules();
+        testStealingCarriesStateAndChains();
+        testStealingEligibilityDeclineAndTermination();
         testGameStateResetAndWinnerLookup();
         testRuleConfigAndDiceBasics();
         testPolicyPersistenceValidation();

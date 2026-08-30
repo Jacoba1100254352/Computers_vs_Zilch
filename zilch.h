@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -79,17 +80,26 @@ private:
 
 class RuleConfig {
 public:
+    [[nodiscard]] bool straightEnabled() const { return enableStraits_; }
     [[nodiscard]] bool straitsEnabled() const { return enableStraits_; }
     [[nodiscard]] bool threePairsEnabled() const { return enableThreePairs_; }
     [[nodiscard]] bool setsEnabled() const { return enableThreePairs_; }
     [[nodiscard]] bool multiplesEnabled() const { return enableMultiples_; }
     [[nodiscard]] bool singlesEnabled() const { return enableSingles_; }
+    [[nodiscard]] std::uint32_t openingScoreLimit() const { return bankThreshold_; }
+    [[nodiscard]] std::uint32_t getOpeningScoreLimit() const { return bankThreshold_; }
     [[nodiscard]] std::uint32_t bankThreshold() const { return bankThreshold_; }
     [[nodiscard]] std::uint32_t getBankThreshold() const { return bankThreshold_; }
     [[nodiscard]] bool firstRollBustBonusEnabled() const { return enableFirstRollBustBonus_; }
     [[nodiscard]] bool finalChaseEnabled() const { return enableFinalChase_; }
     [[nodiscard]] bool tiesAllowed() const { return allowTies_; }
+    [[nodiscard]] bool stealingEnabled() const { return enableStealing_; }
+    [[nodiscard]] bool hasScoringRuleEnabled() const
+    {
+        return enableStraits_ || enableThreePairs_ || enableMultiples_ || enableSingles_;
+    }
 
+    void toggleStraight() { enableStraits_ = !enableStraits_; }
     void toggleStraits() { enableStraits_ = !enableStraits_; }
     void toggleThreePairs() { enableThreePairs_ = !enableThreePairs_; }
     void toggleSets() { toggleThreePairs(); }
@@ -98,17 +108,22 @@ public:
     void toggleFirstRollBustBonus() { enableFirstRollBustBonus_ = !enableFirstRollBustBonus_; }
     void toggleFinalChase() { enableFinalChase_ = !enableFinalChase_; }
     void toggleAllowTies() { allowTies_ = !allowTies_; }
+    void toggleStealing() { enableStealing_ = !enableStealing_; }
+    void adjustOpeningScoreLimit(std::int32_t delta) { adjustBankThreshold(delta); }
     void adjustBankThreshold(std::int32_t delta);
 
+    void setStraightEnabled(bool enabled) { enableStraits_ = enabled; }
     void setStraitsEnabled(bool enabled) { enableStraits_ = enabled; }
     void setThreePairsEnabled(bool enabled) { enableThreePairs_ = enabled; }
     void setSetsEnabled(bool enabled) { setThreePairsEnabled(enabled); }
     void setMultiplesEnabled(bool enabled) { enableMultiples_ = enabled; }
     void setSinglesEnabled(bool enabled) { enableSingles_ = enabled; }
+    void setOpeningScoreLimit(std::uint32_t threshold) { bankThreshold_ = threshold; }
     void setBankThreshold(std::uint32_t threshold) { bankThreshold_ = threshold; }
     void setFirstRollBustBonusEnabled(bool enabled) { enableFirstRollBustBonus_ = enabled; }
     void setFinalChaseEnabled(bool enabled) { enableFinalChase_ = enabled; }
     void setAllowTies(bool enabled) { allowTies_ = enabled; }
+    void setStealingEnabled(bool enabled) { enableStealing_ = enabled; }
 
 private:
     bool enableStraits_{true};
@@ -119,6 +134,7 @@ private:
     bool enableFirstRollBustBonus_{true};
     bool enableFinalChase_{true};
     bool allowTies_{true};
+    bool enableStealing_{false};
 };
 
 class GameManager {
@@ -167,13 +183,31 @@ public:
     [[nodiscard]] bool canBankCurrentScore() const;
     void bankCurrentScore();
 
+    [[nodiscard]] bool hasStealOfferForCurrentPlayer() const;
+    [[nodiscard]] bool canCurrentPlayerSteal() const;
+    [[nodiscard]] std::uint16_t stealOfferDiceCount() const;
+    [[nodiscard]] std::uint32_t stealOfferScore() const;
+    [[nodiscard]] bool acceptStealOffer();
+    void declineStealOffer();
+    [[nodiscard]] bool stealContinuationActive() const { return stealContinuationActive_; }
+    void endStealChain();
+
     void beginFinalRound();
     [[nodiscard]] bool finalRoundActive() const { return finalRoundActive_; }
+    [[nodiscard]] std::size_t finalRoundLeaderIndex() const { return finalRoundLeaderIndex_; }
+    void updateFinalRoundLeaderForCurrentPlayer();
     [[nodiscard]] bool wouldEndAfterCurrentTurn() const;
 
     [[nodiscard]] const Player* highestScoringPlayer() const;
 
 private:
+    struct StealOffer {
+        std::size_t recipientIndex{0};
+        std::uint16_t diceCount{FULL_SET_OF_DICE};
+        std::uint32_t roundScore{0};
+        std::map<std::uint16_t, std::uint32_t> savedMultipleScores;
+    };
+
     std::vector<Player> players_;
     std::size_t currentIndex_{0};
     std::uint32_t scoreLimit_{5000};
@@ -185,7 +219,10 @@ private:
     std::uint32_t rollCountThisTurn_{0};
     bool finalRoundActive_{false};
     std::size_t finalRoundStarterIndex_{0};
+    std::size_t finalRoundLeaderIndex_{0};
     std::map<std::uint16_t, std::uint32_t> savedMultipleScores_;
+    std::optional<StealOffer> stealOffer_;
+    bool stealContinuationActive_{false};
     RuleConfig ruleConfig_;
 };
 

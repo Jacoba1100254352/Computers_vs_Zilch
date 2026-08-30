@@ -117,6 +117,16 @@ Policy policyFromPath(const std::optional<std::string>& path)
     return policy;
 }
 
+void validateMatchConfiguration(const std::uint32_t scoreLimit, const RuleConfig& ruleConfig)
+{
+    if (scoreLimit < 1000)
+        throw std::invalid_argument("Score limit must be at least 1000.");
+    if (ruleConfig.openingScoreLimit() > scoreLimit)
+        throw std::invalid_argument("Opening score must not exceed the score limit.");
+    if (!ruleConfig.hasScoringRuleEnabled())
+        throw std::invalid_argument("At least one scoring rule must be enabled.");
+}
+
 void recordMatch(
     Trainer::Stats& firstStats,
     Trainer::Stats& secondStats,
@@ -159,6 +169,29 @@ void playTurn(GameManager& game, Controller& controller, std::mt19937& rng, std:
     if (output) {
         *output << "\n== " << player.name() << "'s turn ==\n";
         *output << "Scoreboard: " << formatScoreboard(game) << "\n";
+    }
+
+    if (game.hasStealOfferForCurrentPlayer()) {
+        const auto carriedScore = game.stealOfferScore();
+        const auto carriedDice = game.stealOfferDiceCount();
+
+        if (!game.canCurrentPlayerSteal()) {
+            if (output) {
+                *output << "Stealing is unavailable until " << player.name() << " has banked "
+                        << game.ruleConfig().openingScoreLimit() << " points. Starting fresh.\n";
+            }
+            game.declineStealOffer();
+        } else if (controller.decideTurnStart(game) == TurnStartDecision::AcceptSteal &&
+                   game.acceptStealOffer()) {
+            if (output) {
+                *output << player.name() << " accepts the continuation: " << carriedScore
+                        << " round points at risk with " << carriedDice << " dice.\n";
+            }
+        } else {
+            game.declineStealOffer();
+            if (output)
+                *output << player.name() << " declines the continuation and starts with six dice.\n";
+        }
     }
 
     while (game.turnActive()) {
@@ -233,10 +266,12 @@ MatchResult playMatchInternal(
     const std::vector<std::string>& playerNames,
     std::vector<Controller*>& controllers,
     const std::uint32_t scoreLimit,
+    const RuleConfig& ruleConfig,
     const std::uint64_t seed,
     std::ostream* output)
 {
     GameManager game;
+    game.ruleConfig() = ruleConfig;
     game.setPlayers(playerNames);
     game.setScoreLimit(scoreLimit);
 
@@ -264,6 +299,9 @@ MatchResult playMatchInternal(
             }
         }
 
+        if (game.finalRoundActive())
+            game.updateFinalRoundLeaderForCurrentPlayer();
+
         if (game.finalRoundActive() && game.wouldEndAfterCurrentTurn())
             break;
 
@@ -278,11 +316,20 @@ MatchResult playMatchInternal(
     result.winningScore = *std::max_element(result.finalScores.begin(), result.finalScores.end());
     const auto winnerCount =
         std::count(result.finalScores.begin(), result.finalScores.end(), result.winningScore);
-    if (winnerCount == 1 || !game.ruleConfig().tiesAllowed()) {
+    if (winnerCount == 1) {
         const auto winner =
             std::distance(result.finalScores.begin(),
                           std::find(result.finalScores.begin(), result.finalScores.end(), result.winningScore));
         result.winnerIndex = static_cast<std::size_t>(winner);
+    } else if (!game.ruleConfig().tiesAllowed()) {
+        if (game.finalRoundActive()) {
+            result.winnerIndex = game.finalRoundLeaderIndex();
+        } else {
+            const auto winner =
+                std::distance(result.finalScores.begin(),
+                              std::find(result.finalScores.begin(), result.finalScores.end(), result.winningScore));
+            result.winnerIndex = static_cast<std::size_t>(winner);
+        }
     }
 
     if (output) {
@@ -462,6 +509,22 @@ bool savePolicy(const std::string& path, const Policy& policy)
     return static_cast<bool>(output);
 }
 
+TurnStartDecision HumanController::decideTurnStart(GameManager& game)
+{
+    while (true) {
+        output_ << "Steal " << game.stealOfferScore() << " round points with "
+                << game.stealOfferDiceCount() << " dice [s=steal, f=fresh]: " << std::flush;
+        const auto normalized = lowercase(readLineOrThrow(input_));
+
+        if (normalized == "s" || normalized == "steal" || normalized == "y" || normalized == "yes")
+            return TurnStartDecision::AcceptSteal;
+        if (normalized == "f" || normalized == "fresh" || normalized == "n" || normalized == "no")
+            return TurnStartDecision::FreshRoll;
+
+        output_ << "Invalid turn-start action.\n";
+    }
+}
+
 std::size_t HumanController::chooseOption(GameManager&, const std::vector<ScoringOption>& options)
 {
     if (autoScoreRemaining_)
@@ -537,6 +600,19 @@ PostSelectionDecision HumanController::decideAfterSelection(
 
         output_ << "Invalid action.\n";
     }
+}
+
+TurnStartDecision ComputerController::decideTurnStart(GameManager& game)
+{
+    const auto continuationUtility =
+        policy_.scoreWeight * static_cast<double>(game.stealOfferScore()) +
+        policy_.remainingDiceWeight * static_cast<double>(game.stealOfferDiceCount()) +
+        policy_.rollBias;
+    const auto freshRollUtility =
+        policy_.remainingDiceWeight * static_cast<double>(FULL_SET_OF_DICE);
+
+    return continuationUtility >= freshRollUtility ? TurnStartDecision::AcceptSteal :
+                                                     TurnStartDecision::FreshRoll;
 }
 
 double ComputerController::optionUtility(const GameManager&, const ScoringOption& option) const
@@ -619,6 +695,13 @@ PostSelectionDecision ComputerController::decideAfterSelection(
 
 bool runHumanVsComputer(const PlayConfig& config)
 {
+    try {
+        validateMatchConfiguration(config.scoreLimit, config.ruleConfig);
+    } catch (const std::exception& exception) {
+        std::cerr << exception.what() << '\n';
+        return false;
+    }
+
     Policy policy = defaultPolicy();
     std::optional<std::string> loadedPath = config.policyPath;
 
@@ -644,7 +727,7 @@ bool runHumanVsComputer(const PlayConfig& config)
     const std::vector<std::string> names{config.humanName, "Computer"};
 
     try {
-        playMatchInternal(names, controllers, config.scoreLimit, config.seed, &std::cout);
+        playMatchInternal(names, controllers, config.scoreLimit, config.ruleConfig, config.seed, &std::cout);
     } catch (const InputClosed& exception) {
         std::cout << '\n' << exception.what() << ". Exiting Zilch.\n";
         return true;
@@ -662,8 +745,10 @@ bool runArena(const ArenaConfig& config)
         std::cerr << "Arena games must be an even number of at least 2 because evaluation uses mirrored pairs.\n";
         return false;
     }
-    if (config.scoreLimit < 1000) {
-        std::cerr << "Score limit must be at least 1000.\n";
+    try {
+        validateMatchConfiguration(config.scoreLimit, config.ruleConfig);
+    } catch (const std::exception& exception) {
+        std::cerr << exception.what() << '\n';
         return false;
     }
 
@@ -712,6 +797,7 @@ bool runArena(const ArenaConfig& config)
                     {"Policy A", "Policy B"},
                     controllers,
                     config.scoreLimit,
+                    config.ruleConfig,
                     seriesSeeds[seriesIndex],
                     nullptr);
 
@@ -722,6 +808,7 @@ bool runArena(const ArenaConfig& config)
                     {"Policy B", "Policy A"},
                     swappedControllers,
                     config.scoreLimit,
+                    config.ruleConfig,
                     seriesSeeds[seriesIndex],
                     nullptr);
 
@@ -796,8 +883,7 @@ Trainer::Trainer(TrainingConfig config)
         throw std::invalid_argument(
             "Training matches must be even and at least twice as large as the population.");
     }
-    if (config_.scoreLimit < 1000)
-        throw std::invalid_argument("Score limit must be at least 1000.");
+    validateMatchConfiguration(config_.scoreLimit, config_.ruleConfig);
 
     if (config_.threads == 0) {
         config_.threads = std::max<std::size_t>(1, std::thread::hardware_concurrency());
@@ -830,7 +916,8 @@ MatchResult Trainer::playComputerMatch(const Policy& first, const Policy& second
     ComputerController firstController(first);
     ComputerController secondController(second);
     std::vector<Controller*> controllers{&firstController, &secondController};
-    return playMatchInternal({"Policy A", "Policy B"}, controllers, config_.scoreLimit, seed, nullptr);
+    return playMatchInternal(
+        {"Policy A", "Policy B"}, controllers, config_.scoreLimit, config_.ruleConfig, seed, nullptr);
 }
 
 Trainer::SeriesResult Trainer::playMirroredSeries(

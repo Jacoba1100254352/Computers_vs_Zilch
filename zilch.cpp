@@ -50,6 +50,7 @@ void RuleConfig::adjustBankThreshold(const std::int32_t delta)
 
 void GameManager::setPlayers(const std::vector<std::string>& playerNames)
 {
+    endStealChain();
     players_.clear();
     players_.reserve(playerNames.size());
     for (const auto& playerName : playerNames)
@@ -63,6 +64,7 @@ void GameManager::setPlayers(const std::vector<std::string>& playerNames)
     rollCountThisTurn_ = 0;
     finalRoundActive_ = false;
     finalRoundStarterIndex_ = 0;
+    finalRoundLeaderIndex_ = 0;
     clearSavedMultiples();
 }
 
@@ -79,6 +81,9 @@ void GameManager::startTurn(const std::size_t playerIndex)
         return;
 
     currentIndex_ = playerIndex % players_.size();
+    if (!ruleConfig_.stealingEnabled() || !stealOffer_ || stealOffer_->recipientIndex != currentIndex_)
+        stealOffer_.reset();
+    stealContinuationActive_ = false;
     currentPlayer().score().resetTurnScore();
     currentPlayer().dice().diceSetMap().clear();
     currentPlayer().dice().setNumDiceInPlay(FULL_SET_OF_DICE);
@@ -108,10 +113,14 @@ void GameManager::manageDiceCount(const std::uint16_t numDice)
     if (players_.empty())
         return;
 
-    const bool resetsToFullSet = numDice == 0 || numDice >= FULL_SET_OF_DICE;
+    const bool hotDice = numDice == 0;
+    const bool resetsToFullSet = hotDice || numDice >= FULL_SET_OF_DICE;
     currentPlayer().dice().setNumDiceInPlay(resetsToFullSet ? FULL_SET_OF_DICE : numDice);
-    if (resetsToFullSet)
+    if (resetsToFullSet) {
         clearSavedMultiples();
+        if (hotDice)
+            endStealChain();
+    }
 }
 
 bool GameManager::hasSavedMultiple(const std::uint16_t dieValue) const
@@ -154,7 +163,23 @@ void GameManager::bankCurrentScore()
         return;
 
     auto& score = currentPlayer().score();
-    score.addPermanentScore(score.roundScore());
+    const auto bankedRoundScore = score.roundScore();
+    const auto unrolledDice = currentPlayer().dice().numDiceInPlay();
+    const auto carriedMultiples = savedMultipleScores_;
+
+    stealOffer_.reset();
+    if (ruleConfig_.stealingEnabled() && players_.size() > 1 && unrolledDice > 0 &&
+        unrolledDice < FULL_SET_OF_DICE) {
+        stealOffer_ = StealOffer{
+            (currentIndex_ + 1) % players_.size(),
+            unrolledDice,
+            bankedRoundScore,
+            carriedMultiples,
+        };
+    }
+    stealContinuationActive_ = false;
+
+    score.addPermanentScore(bankedRoundScore);
     score.resetTurnScore();
     currentPlayer().dice().setNumDiceInPlay(0);
     clearSavedMultiples();
@@ -162,10 +187,92 @@ void GameManager::bankCurrentScore()
     bustPending_ = false;
 }
 
+bool GameManager::hasStealOfferForCurrentPlayer() const
+{
+    return !players_.empty() && stealOffer_ && stealOffer_->recipientIndex == currentIndex_;
+}
+
+bool GameManager::canCurrentPlayerSteal() const
+{
+    return ruleConfig_.stealingEnabled() && hasStealOfferForCurrentPlayer() &&
+           currentPlayer().score().permanentScore() >= ruleConfig_.openingScoreLimit();
+}
+
+std::uint16_t GameManager::stealOfferDiceCount() const
+{
+    return hasStealOfferForCurrentPlayer() ? stealOffer_->diceCount : 0;
+}
+
+std::uint32_t GameManager::stealOfferScore() const
+{
+    return hasStealOfferForCurrentPlayer() ? stealOffer_->roundScore : 0;
+}
+
+bool GameManager::acceptStealOffer()
+{
+    if (!canCurrentPlayerSteal())
+        return false;
+
+    const StealOffer accepted = *stealOffer_;
+    stealOffer_.reset();
+
+    currentPlayer().score().setRoundScore(accepted.roundScore);
+    currentPlayer().dice().diceSetMap().clear();
+    currentPlayer().dice().setNumDiceInPlay(accepted.diceCount);
+    savedMultipleScores_ = accepted.savedMultipleScores;
+
+    turnActive_ = true;
+    selectedOption_ = false;
+    bustPending_ = false;
+    hasRolledThisTurn_ = false;
+    bustBonusUsedThisTurn_ = false;
+    rollCountThisTurn_ = 0;
+    stealContinuationActive_ = true;
+    return true;
+}
+
+void GameManager::declineStealOffer()
+{
+    if (!hasStealOfferForCurrentPlayer())
+        return;
+
+    stealOffer_.reset();
+    stealContinuationActive_ = false;
+    currentPlayer().score().resetTurnScore();
+    currentPlayer().dice().diceSetMap().clear();
+    currentPlayer().dice().setNumDiceInPlay(FULL_SET_OF_DICE);
+    clearSavedMultiples();
+
+    turnActive_ = true;
+    selectedOption_ = false;
+    bustPending_ = false;
+    hasRolledThisTurn_ = false;
+    bustBonusUsedThisTurn_ = false;
+    rollCountThisTurn_ = 0;
+}
+
+void GameManager::endStealChain()
+{
+    stealOffer_.reset();
+    stealContinuationActive_ = false;
+}
+
 void GameManager::beginFinalRound()
 {
     finalRoundActive_ = true;
     finalRoundStarterIndex_ = currentIndex_;
+    finalRoundLeaderIndex_ = currentIndex_;
+}
+
+void GameManager::updateFinalRoundLeaderForCurrentPlayer()
+{
+    if (!finalRoundActive_ || players_.empty() || finalRoundLeaderIndex_ >= players_.size())
+        return;
+
+    if (currentPlayer().score().permanentScore() >
+        players_[finalRoundLeaderIndex_].score().permanentScore()) {
+        finalRoundLeaderIndex_ = currentIndex_;
+    }
 }
 
 bool GameManager::wouldEndAfterCurrentTurn() const
@@ -346,7 +453,8 @@ void Checker::handleBust() const
     auto& player = game_.currentPlayer();
     auto& score = player.score();
 
-    if (game_.ruleConfig().firstRollBustBonusEnabled() && game_.rollCountThisTurn() == 1 &&
+    if (game_.ruleConfig().firstRollBustBonusEnabled() && !game_.stealContinuationActive() &&
+        game_.rollCountThisTurn() == 1 &&
         !game_.bustBonusUsedThisTurn()) {
         score.addRoundScore(50);
         game_.manageDiceCount(FULL_SET_OF_DICE);
@@ -359,6 +467,7 @@ void Checker::handleBust() const
 
     score.setRoundScore(0);
     game_.clearSavedMultiples();
+    game_.endStealChain();
     game_.setTurnActive(false, true);
 }
 
