@@ -1,5 +1,6 @@
 #include "computer.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -83,6 +84,24 @@ void writePolicyFile(const std::filesystem::path& path, const std::string& body)
 {
     std::ofstream output(path);
     output << body;
+}
+
+void expectPoliciesEqual(const zilch::Policy& actual, const zilch::Policy& expected, const std::string& context)
+{
+    expect(actual.name == expected.name, context + ": policy names should match");
+    expect(actual.bankThresholdByDice == expected.bankThresholdByDice, context + ": bank thresholds should match");
+    expect(std::abs(actual.scoreWeight - expected.scoreWeight) < 1e-9, context + ": score weights should match");
+    expect(std::abs(actual.remainingDiceWeight - expected.remainingDiceWeight) < 1e-9,
+           context + ": remaining-dice weights should match");
+    expect(std::abs(actual.hotDiceWeight - expected.hotDiceWeight) < 1e-9,
+           context + ": hot-dice weights should match");
+    expect(std::abs(actual.multipleWeight - expected.multipleWeight) < 1e-9,
+           context + ": multiple weights should match");
+    expect(std::abs(actual.leadFactor - expected.leadFactor) < 1e-9, context + ": lead factors should match");
+    expect(std::abs(actual.trailFactor - expected.trailFactor) < 1e-9, context + ": trail factors should match");
+    expect(std::abs(actual.closingFactor - expected.closingFactor) < 1e-9,
+           context + ": closing factors should match");
+    expect(std::abs(actual.rollBias - expected.rollBias) < 1e-9, context + ": roll biases should match");
 }
 
 void testScoringOptionsAndRuleToggles()
@@ -577,6 +596,191 @@ void testHumanControllerShortcuts()
         "the baseline AI should decline a low-value continuation deterministically");
 }
 
+void testNamedDifficultyPoliciesMatchResearchArtifacts()
+{
+    expect(
+        zilch::parseComputerDifficulty("easy") == zilch::ComputerDifficulty::Easy &&
+            zilch::parseComputerDifficulty("MEDIUM") == zilch::ComputerDifficulty::Medium &&
+            zilch::parseComputerDifficulty("Hard") == zilch::ComputerDifficulty::Hard,
+        "difficulty parser should be case-insensitive");
+    expect(!zilch::parseComputerDifficulty("expert"), "unknown difficulty names should be rejected");
+    expect(zilch::computerDifficultyName(zilch::ComputerDifficulty::Easy) == "Easy",
+           "difficulty names should be suitable for CLI output");
+
+    const auto easy = zilch::policyForDifficulty(zilch::ComputerDifficulty::Easy);
+    for (std::size_t dice = 1; dice < easy.bankThresholdByDice.size(); ++dice)
+        expect(easy.bankThresholdByDice[dice] == 600, "Easy should use one simple 600-point bank target");
+
+    const auto medium = zilch::policyForDifficulty(zilch::ComputerDifficulty::Medium);
+    expect(medium.bankThresholdByDice == std::array<int, 7>{0, 350, 500, 700, 850, 1000, 1150},
+           "Medium should preserve the established score-aware baseline");
+
+    zilch::Policy trackedStandard;
+    const auto standardPath = std::filesystem::path(ZILCH_SOURCE_DIR) / "trained_policy.cfg";
+    expect(zilch::loadPolicy(standardPath.string(), trackedStandard), "tracked standard policy should load");
+    expectPoliciesEqual(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard, false),
+        trackedStandard,
+        "Hard standard preset");
+
+    zilch::Policy trackedStealing;
+    const auto stealingPath = std::filesystem::path(ZILCH_SOURCE_DIR) / "trained_stealing_policy.cfg";
+    expect(zilch::loadPolicy(stealingPath.string(), trackedStealing), "tracked Stealing policy should load");
+    expectPoliciesEqual(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard, true),
+        trackedStealing,
+        "Hard Stealing preset");
+}
+
+void testEasyScoresEverythingAndRecognizesAWin()
+{
+    auto game = makeGame();
+    game.ruleConfig().setOpeningScoreLimit(0);
+    game.registerRoll();
+    setDice(game, {1, 5, 2, 2, 3, 4});
+    zilch::Checker checker(game);
+    zilch::ComputerController easy(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Easy),
+        zilch::ComputerDifficulty::Easy);
+
+    auto options = checker.availableOptions();
+    checker.applyOption(options[easy.chooseOption(game, options)]);
+    options = checker.availableOptions();
+    expect(!options.empty(), "a second scoring die should remain after Easy's first choice");
+    expect(easy.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
+           "Easy should take every available scoring option");
+    checker.applyOption(options[easy.chooseOption(game, options)]);
+
+    expect(easy.decideAfterSelection(game, {}) == zilch::PostSelectionDecision::Roll,
+           "Easy should keep rolling below its simple target");
+    game.currentPlayer().score().setRoundScore(600);
+    expect(easy.decideAfterSelection(game, {}) == zilch::PostSelectionDecision::Bank,
+           "Easy should bank at its simple target");
+
+    auto winningGame = makeGame();
+    winningGame.ruleConfig().setOpeningScoreLimit(0);
+    winningGame.players()[0].score().addPermanentScore(4900);
+    winningGame.currentPlayer().score().setRoundScore(100);
+    winningGame.currentPlayer().dice().setNumDiceInPlay(1);
+    winningGame.registerRoll();
+    winningGame.setSelectedOption(true);
+    zilch::ComputerController winningEasy(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Easy),
+        zilch::ComputerDifficulty::Easy);
+    expect(winningEasy.decideAfterSelection(winningGame, {}) == zilch::PostSelectionDecision::Bank,
+           "Easy should bank a winning score even below its ordinary target");
+}
+
+zilch::PostSelectionDecision namedDifficultyDecision(
+    const zilch::ComputerDifficulty difficulty,
+    const std::uint32_t playerScore,
+    const std::uint32_t opponentScore,
+    const std::uint32_t roundScore,
+    const std::uint16_t remainingDice,
+    const bool allowTies = true)
+{
+    auto game = makeGame();
+    game.ruleConfig().setOpeningScoreLimit(0);
+    game.ruleConfig().setAllowTies(allowTies);
+    game.players()[0].score().addPermanentScore(playerScore);
+    game.players()[1].score().addPermanentScore(opponentScore);
+    game.currentPlayer().score().setRoundScore(roundScore);
+    game.currentPlayer().dice().setNumDiceInPlay(remainingDice);
+    game.registerRoll();
+    game.setSelectedOption(true);
+    zilch::ComputerController controller(zilch::policyForDifficulty(difficulty), difficulty);
+    return controller.decideAfterSelection(game, {});
+}
+
+void testMediumAndHardEndgameAwareness()
+{
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Medium, 4800, 3500, 100, 5) ==
+               zilch::PostSelectionDecision::Bank,
+           "Medium should stage just below the target only with a safe lead");
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Medium, 4800, 4700, 100, 5) ==
+               zilch::PostSelectionDecision::Roll,
+           "Medium should not stage below the target against a close opponent");
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Medium, 4900, 4700, 100, 5) ==
+               zilch::PostSelectionDecision::Roll,
+           "Medium should seek a buffer after narrowly crossing the target with safe dice");
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Medium, 4900, 4700, 1100, 5) ==
+               zilch::PostSelectionDecision::Bank,
+           "Medium should bank after building its close-opponent buffer");
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Medium, 4900, 4700, 100, 3) ==
+               zilch::PostSelectionDecision::Bank,
+           "Medium should protect a narrow winning score when too few dice remain");
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Hard, 4900, 4700, 100, 3) ==
+               zilch::PostSelectionDecision::Roll,
+           "Hard should combine the buffer plan with its higher risk tolerance");
+
+    auto rawPolicyGame = makeGame();
+    rawPolicyGame.ruleConfig().setOpeningScoreLimit(0);
+    rawPolicyGame.players()[0].score().addPermanentScore(4900);
+    rawPolicyGame.players()[1].score().addPermanentScore(4700);
+    rawPolicyGame.currentPlayer().score().setRoundScore(100);
+    rawPolicyGame.currentPlayer().dice().setNumDiceInPlay(3);
+    rawPolicyGame.registerRoll();
+    rawPolicyGame.setSelectedOption(true);
+    zilch::ComputerController rawMediumPolicy(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Medium));
+    expect(rawMediumPolicy.decideAfterSelection(rawPolicyGame, {}) == zilch::PostSelectionDecision::Roll,
+           "an exact policy controller should not inherit named-level finish heuristics");
+
+    const auto finalChaseDecision = [](const bool allowTies, const std::uint32_t roundScore) {
+        auto game = makeGame();
+        game.ruleConfig().setOpeningScoreLimit(0);
+        game.ruleConfig().setAllowTies(allowTies);
+        game.players()[0].score().addPermanentScore(5200);
+        game.players()[1].score().addPermanentScore(5000);
+        game.beginFinalRound();
+        game.switchToNextPlayer();
+        game.startTurn(game.currentIndex());
+        game.currentPlayer().score().setRoundScore(roundScore);
+        game.currentPlayer().dice().setNumDiceInPlay(2);
+        game.registerRoll();
+        game.setSelectedOption(true);
+        zilch::ComputerController medium(
+            zilch::policyForDifficulty(zilch::ComputerDifficulty::Medium),
+            zilch::ComputerDifficulty::Medium);
+        return medium.decideAfterSelection(game, {});
+    };
+
+    expect(finalChaseDecision(true, 200) == zilch::PostSelectionDecision::Bank,
+           "a named bot should bank a permitted tie during Final Chase");
+    expect(finalChaseDecision(false, 200) == zilch::PostSelectionDecision::Roll,
+           "a named bot should keep rolling when a tie cannot win Final Chase");
+    expect(finalChaseDecision(false, 250) == zilch::PostSelectionDecision::Bank,
+           "a named bot should bank once it strictly leads Final Chase");
+}
+
+void testNamedDifficultyStealChoices()
+{
+    auto game = makeGame();
+    prepareStealOffer(game, 500, 1, true);
+
+    zilch::ComputerController easy(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Easy, true),
+        zilch::ComputerDifficulty::Easy);
+    zilch::ComputerController medium(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Medium, true),
+        zilch::ComputerDifficulty::Medium);
+    zilch::ComputerController hard(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard, true),
+        zilch::ComputerDifficulty::Hard);
+
+    expect(easy.decideTurnStart(game) == zilch::TurnStartDecision::FreshRoll,
+           "Easy should decline a continuation below its simple threshold");
+    expect(medium.decideTurnStart(game) == zilch::TurnStartDecision::AcceptSteal,
+           "Medium should compare a continuation with its dice-aware target");
+    expect(hard.decideTurnStart(game) == zilch::TurnStartDecision::FreshRoll,
+           "Hard should follow the Stealing-trained utility cutoff");
+
+    auto strongerOffer = makeGame();
+    prepareStealOffer(strongerOffer, 550, 1, true);
+    expect(hard.decideTurnStart(strongerOffer) == zilch::TurnStartDecision::AcceptSteal,
+           "Hard should accept at the Stealing-trained one-die cutoff");
+}
+
 void testTrainerAndArenaValidation()
 {
     zilch::TrainingConfig config;
@@ -633,10 +837,21 @@ void testTrainerAndArenaValidation()
     arena.ruleConfig.setOpeningScoreLimit(5001);
     expect(!zilch::runArena(arena), "arena opening score above the winning score should fail");
 
+    arena = {};
+    arena.games = 2;
+    arena.policyAPath = "trained_policy.cfg";
+    arena.difficultyA = zilch::ComputerDifficulty::Hard;
+    expect(!zilch::runArena(arena), "arena should reject a named bot and policy path for the same seat");
+
     zilch::PlayConfig play;
     play.scoreLimit = 1000;
     play.ruleConfig.setOpeningScoreLimit(1001);
     expect(!zilch::runHumanVsComputer(play), "play opening score above the winning score should fail before input");
+
+    play = {};
+    play.policyPath = "trained_policy.cfg";
+    play.difficulty = zilch::ComputerDifficulty::Hard;
+    expect(!zilch::runHumanVsComputer(play), "play should reject a named difficulty combined with a policy path");
 }
 
 } // namespace
@@ -654,6 +869,10 @@ int main()
         testRuleConfigAndDiceBasics();
         testPolicyPersistenceValidation();
         testHumanControllerShortcuts();
+        testNamedDifficultyPoliciesMatchResearchArtifacts();
+        testEasyScoresEverythingAndRecognizesAWin();
+        testMediumAndHardEndgameAwareness();
+        testNamedDifficultyStealChoices();
         testTrainerAndArenaValidation();
     } catch (const std::exception& exception) {
         std::cerr << "Test failed: " << exception.what() << '\n';

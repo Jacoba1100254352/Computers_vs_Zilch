@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -17,8 +18,9 @@ void printUsage()
 {
     std::cout
         << "Usage:\n"
-        << "  ./zilch play [--name NAME] [--score-limit N] [--policy PATH] [--seed N]\n"
-        << "  ./zilch arena [--policy-a PATH] [--policy-b PATH] [--games N] [--threads N]\n"
+        << "  ./zilch play [--name NAME] [--score-limit N] [--difficulty LEVEL | --policy PATH] [--seed N]\n"
+        << "  ./zilch arena [--bot-a LEVEL | --policy-a PATH] [--bot-b LEVEL | --policy-b PATH]\n"
+        << "                 [--games N] [--threads N]\n"
         << "                 [--score-limit N] [--seed N]\n"
         << "  ./zilch train [--generations N] [--population N] [--matches N] [--threads N]\n"
         << "                [--score-limit N] [--output PATH] [--resume PATH] [--seed N]\n"
@@ -28,6 +30,8 @@ void printUsage()
         << "  --straight BOOL --three-pairs BOOL --multiples BOOL --singles BOOL\n"
         << "  --first-roll-bust BOOL --final-chase BOOL --allow-ties BOOL --stealing BOOL\n"
         << "  BOOL accepts on/off, true/false, yes/no, enabled/disabled, or 1/0.\n"
+        << "  LEVEL accepts easy, medium, or hard. Hard automatically uses the Stealing-trained\n"
+        << "  policy when --stealing is enabled. Policy paths remain available for research runs.\n"
         << "Notes: score limits must be at least 1000; opening score cannot exceed the score limit;\n"
         << "       arena games and training matches must be even.\n";
 }
@@ -126,6 +130,20 @@ bool parseBoolean(const std::map<std::string, std::string>& options, const std::
     throw std::invalid_argument("Invalid boolean value for --" + key + ": " + it->second);
 }
 
+std::optional<zilch::ComputerDifficulty> parseDifficultyOption(
+    const std::map<std::string, std::string>& options,
+    const std::string& key)
+{
+    const auto it = options.find(key);
+    if (it == options.end())
+        return std::nullopt;
+
+    const auto difficulty = zilch::parseComputerDifficulty(it->second);
+    if (!difficulty)
+        throw std::invalid_argument("Invalid computer difficulty for --" + key + ": " + it->second);
+    return difficulty;
+}
+
 void applyCommonRuleOptions(
     const std::map<std::string, std::string>& options,
     const std::uint32_t scoreLimit,
@@ -166,12 +184,15 @@ int main(const int argc, char* argv[])
         const auto options = parseOptions(argc, argv, 2);
 
         if (command == "play") {
-            rejectUnknownOptions(options, {"name", "policy", "seed"});
+            rejectUnknownOptions(options, {"name", "policy", "difficulty", "seed"});
             zilch::PlayConfig config;
             if (const auto it = options.find("name"); it != options.end())
                 config.humanName = it->second;
             if (const auto it = options.find("policy"); it != options.end())
                 config.policyPath = it->second;
+            config.difficulty = parseDifficultyOption(options, "difficulty");
+            if (config.policyPath && config.difficulty)
+                throw std::invalid_argument("--policy cannot be combined with --difficulty.");
 
             config.scoreLimit = parseUnsigned<std::uint32_t>(
                 options, "score-limit", config.scoreLimit, 1000);
@@ -208,12 +229,18 @@ int main(const int argc, char* argv[])
         }
 
         if (command == "arena") {
-            rejectUnknownOptions(options, {"policy-a", "policy-b", "games", "threads", "seed"});
+            rejectUnknownOptions(options, {"policy-a", "policy-b", "bot-a", "bot-b", "games", "threads", "seed"});
             zilch::ArenaConfig config;
             if (const auto it = options.find("policy-a"); it != options.end())
                 config.policyAPath = it->second;
             if (const auto it = options.find("policy-b"); it != options.end())
                 config.policyBPath = it->second;
+            config.difficultyA = parseDifficultyOption(options, "bot-a");
+            config.difficultyB = parseDifficultyOption(options, "bot-b");
+            if (config.policyAPath && config.difficultyA)
+                throw std::invalid_argument("--policy-a cannot be combined with --bot-a.");
+            if (config.policyBPath && config.difficultyB)
+                throw std::invalid_argument("--policy-b cannot be combined with --bot-b.");
 
             config.games = parseUnsigned<std::size_t>(options, "games", config.games, 2);
             config.threads = parseUnsigned<std::size_t>(options, "threads", config.threads, 0, 1024);

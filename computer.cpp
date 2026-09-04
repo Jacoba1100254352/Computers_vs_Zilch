@@ -37,6 +37,54 @@ Policy defaultPolicy()
     return {};
 }
 
+Policy easyPolicy()
+{
+    Policy policy;
+    policy.name = "easy";
+    policy.bankThresholdByDice = {0, 600, 600, 600, 600, 600, 600};
+    policy.scoreWeight = 1.0;
+    policy.remainingDiceWeight = 0.0;
+    policy.hotDiceWeight = 0.0;
+    policy.multipleWeight = 0.0;
+    policy.leadFactor = 0.0;
+    policy.trailFactor = 0.0;
+    policy.closingFactor = 0.0;
+    policy.rollBias = 0.0;
+    return policy;
+}
+
+Policy hardStandardPolicy()
+{
+    Policy policy;
+    policy.name = "best";
+    policy.bankThresholdByDice = {0, 200, 1021, 1128, 1506, 2130, 2130};
+    policy.scoreWeight = 1.0045;
+    policy.remainingDiceWeight = 36.0805;
+    policy.hotDiceWeight = 354.561;
+    policy.multipleWeight = 91.9329;
+    policy.leadFactor = 0.0;
+    policy.trailFactor = 0.293194;
+    policy.closingFactor = 0.193316;
+    policy.rollBias = 136.066;
+    return policy;
+}
+
+Policy hardStealingPolicy()
+{
+    Policy policy;
+    policy.name = "best";
+    policy.bankThresholdByDice = {0, 313, 313, 1106, 1360, 1360, 1376};
+    policy.scoreWeight = 0.88553;
+    policy.remainingDiceWeight = 91.2663;
+    policy.hotDiceWeight = 229.628;
+    policy.multipleWeight = 94.2546;
+    policy.leadFactor = 0.0;
+    policy.trailFactor = 0.187935;
+    policy.closingFactor = 0.20764;
+    policy.rollBias = -26.2974;
+    return policy;
+}
+
 void clampPolicy(Policy& policy)
 {
     for (std::size_t index = 1; index < policy.bankThresholdByDice.size(); ++index) {
@@ -115,6 +163,18 @@ Policy policyFromPath(const std::optional<std::string>& path)
     if (path && !loadPolicy(*path, policy))
         throw std::runtime_error("Failed to load policy from " + *path);
     return policy;
+}
+
+Policy configuredPolicy(
+    const std::optional<std::string>& path,
+    const std::optional<ComputerDifficulty> difficulty,
+    const bool stealingEnabled)
+{
+    if (path && difficulty)
+        throw std::invalid_argument("A policy path cannot be combined with a named computer difficulty.");
+    if (difficulty)
+        return policyForDifficulty(*difficulty, stealingEnabled);
+    return policyFromPath(path);
 }
 
 void validateMatchConfiguration(const std::uint32_t scoreLimit, const RuleConfig& ruleConfig)
@@ -347,6 +407,44 @@ MatchResult playMatchInternal(
 }
 
 } // namespace
+
+std::string_view computerDifficultyName(const ComputerDifficulty difficulty)
+{
+    switch (difficulty) {
+    case ComputerDifficulty::Easy:
+        return "Easy";
+    case ComputerDifficulty::Medium:
+        return "Medium";
+    case ComputerDifficulty::Hard:
+        return "Hard";
+    }
+    return "Unknown";
+}
+
+std::optional<ComputerDifficulty> parseComputerDifficulty(const std::string_view value)
+{
+    const auto normalized = lowercase(std::string(value));
+    if (normalized == "easy")
+        return ComputerDifficulty::Easy;
+    if (normalized == "medium")
+        return ComputerDifficulty::Medium;
+    if (normalized == "hard")
+        return ComputerDifficulty::Hard;
+    return std::nullopt;
+}
+
+Policy policyForDifficulty(const ComputerDifficulty difficulty, const bool stealingEnabled)
+{
+    switch (difficulty) {
+    case ComputerDifficulty::Easy:
+        return easyPolicy();
+    case ComputerDifficulty::Medium:
+        return defaultPolicy();
+    case ComputerDifficulty::Hard:
+        return stealingEnabled ? hardStealingPolicy() : hardStandardPolicy();
+    }
+    return defaultPolicy();
+}
 
 std::string describePolicy(const Policy& policy)
 {
@@ -604,6 +702,18 @@ PostSelectionDecision HumanController::decideAfterSelection(
 
 TurnStartDecision ComputerController::decideTurnStart(GameManager& game)
 {
+    if (difficulty_ == ComputerDifficulty::Easy) {
+        return game.stealOfferScore() >= 600 ? TurnStartDecision::AcceptSteal :
+                                               TurnStartDecision::FreshRoll;
+    }
+
+    if (difficulty_ == ComputerDifficulty::Medium) {
+        const auto offeredDice = game.stealOfferDiceCount();
+        const auto threshold = policy_.bankThresholdByDice[offeredDice] * 0.7;
+        return static_cast<double>(game.stealOfferScore()) >= threshold ? TurnStartDecision::AcceptSteal :
+                                                                         TurnStartDecision::FreshRoll;
+    }
+
     const auto continuationUtility =
         policy_.scoreWeight * static_cast<double>(game.stealOfferScore()) +
         policy_.remainingDiceWeight * static_cast<double>(game.stealOfferDiceCount()) +
@@ -656,6 +766,56 @@ int ComputerController::bankThreshold(const GameManager& game) const
     return std::clamp(threshold, 200, static_cast<int>(game.scoreLimit()));
 }
 
+std::optional<PostSelectionDecision> ComputerController::endgameDecision(const GameManager& game) const
+{
+    if (!difficulty_)
+        return std::nullopt;
+
+    const auto difficulty = *difficulty_;
+    const auto& player = game.currentPlayer();
+    const auto projectedTotal = static_cast<std::uint64_t>(player.score().permanentScore()) +
+                                static_cast<std::uint64_t>(player.score().roundScore());
+    const auto opponentScore = static_cast<std::uint64_t>(maxOpponentScore(game, game.currentIndex()));
+    const auto winningScore = static_cast<std::uint64_t>(game.scoreLimit());
+    const auto remainingDice = player.dice().numDiceInPlay();
+
+    if (game.finalRoundActive()) {
+        const bool canTie = game.ruleConfig().tiesAllowed() && projectedTotal >= opponentScore;
+        return canTie || projectedTotal > opponentScore ? PostSelectionDecision::Bank :
+                                                          PostSelectionDecision::Roll;
+    }
+
+    if (projectedTotal >= winningScore) {
+        if (!game.ruleConfig().finalChaseEnabled() || game.playerCount() == 1 ||
+            difficulty == ComputerDifficulty::Easy) {
+            return PostSelectionDecision::Bank;
+        }
+
+        const auto opponentDistance = opponentScore >= winningScore ? 0 : winningScore - opponentScore;
+        const std::uint64_t desiredBuffer = opponentDistance <= 500 ? 1000 :
+                                            opponentDistance <= 1000 ? 500 : 0;
+        if (desiredBuffer == 0 || projectedTotal >= winningScore + desiredBuffer)
+            return PostSelectionDecision::Bank;
+
+        const std::uint16_t minimumDiceToPress = difficulty == ComputerDifficulty::Hard ? 3 : 4;
+        return remainingDice < minimumDiceToPress ? PostSelectionDecision::Bank :
+                                                   PostSelectionDecision::Roll;
+    }
+
+    if (!game.ruleConfig().finalChaseEnabled() || difficulty == ComputerDifficulty::Easy)
+        return std::nullopt;
+
+    const auto distanceToTarget = winningScore - projectedTotal;
+    if (distanceToTarget <= 150) {
+        if (projectedTotal >= opponentScore + 500)
+            return PostSelectionDecision::Bank;
+        if (remainingDice >= 3)
+            return PostSelectionDecision::Roll;
+    }
+
+    return std::nullopt;
+}
+
 std::size_t ComputerController::chooseOption(GameManager& game, const std::vector<ScoringOption>& options)
 {
     std::size_t bestIndex = 0;
@@ -677,12 +837,20 @@ PostSelectionDecision ComputerController::decideAfterSelection(
     const std::vector<ScoringOption>& remainingOptions)
 {
     if (!remainingOptions.empty()) {
+        if (difficulty_ == ComputerDifficulty::Easy || difficulty_ == ComputerDifficulty::Medium)
+            return PostSelectionDecision::SelectAgain;
+
         auto bestContinuationUtility = optionUtility(game, remainingOptions.front());
         for (std::size_t index = 1; index < remainingOptions.size(); ++index)
             bestContinuationUtility = std::max(bestContinuationUtility, optionUtility(game, remainingOptions[index]));
 
         if (bestContinuationUtility >= rollUtility(game))
             return PostSelectionDecision::SelectAgain;
+    }
+
+    if (game.canBankCurrentScore()) {
+        if (const auto decision = endgameDecision(game); decision)
+            return *decision;
     }
 
     if (game.canBankCurrentScore() &&
@@ -702,26 +870,40 @@ bool runHumanVsComputer(const PlayConfig& config)
         return false;
     }
 
+    if (config.policyPath && config.difficulty) {
+        std::cerr << "A policy path cannot be combined with a named computer difficulty.\n";
+        return false;
+    }
+
     Policy policy = defaultPolicy();
     std::optional<std::string> loadedPath = config.policyPath;
 
-    if (!loadedPath && std::filesystem::exists("trained_policy.cfg"))
+    if (config.difficulty) {
+        policy = policyForDifficulty(*config.difficulty, config.ruleConfig.stealingEnabled());
+    } else if (!loadedPath && std::filesystem::exists("trained_policy.cfg")) {
         loadedPath = "trained_policy.cfg";
+    }
 
     if (loadedPath && !loadPolicy(*loadedPath, policy)) {
         std::cerr << "Failed to load policy from " << *loadedPath << '\n';
         return false;
     }
 
-    if (loadedPath)
+    if (config.difficulty) {
+        std::cout << "Using " << computerDifficultyName(*config.difficulty) << " computer preset";
+        if (*config.difficulty == ComputerDifficulty::Hard && config.ruleConfig.stealingEnabled())
+            std::cout << " with the Stealing-trained policy";
+        std::cout << '\n';
+    } else if (loadedPath) {
         std::cout << "Using computer policy from " << *loadedPath << '\n';
-    else
+    } else {
         std::cout << "Using built-in computer policy\n";
+    }
 
     std::cout << describePolicy(policy) << "\n";
 
     HumanController human(std::cin, std::cout);
-    ComputerController computer(policy);
+    ComputerController computer(policy, config.difficulty);
 
     std::vector<Controller*> controllers{&human, &computer};
     const std::vector<std::string> names{config.humanName, "Computer"};
@@ -756,8 +938,8 @@ bool runArena(const ArenaConfig& config)
     Policy policyB;
 
     try {
-        policyA = policyFromPath(config.policyAPath);
-        policyB = policyFromPath(config.policyBPath);
+        policyA = configuredPolicy(config.policyAPath, config.difficultyA, config.ruleConfig.stealingEnabled());
+        policyB = configuredPolicy(config.policyBPath, config.difficultyB, config.ruleConfig.stealingEnabled());
     } catch (const std::exception& exception) {
         std::cerr << exception.what() << '\n';
         return false;
@@ -789,8 +971,8 @@ bool runArena(const ArenaConfig& config)
                 if (seriesIndex >= seriesSeeds.size())
                     break;
 
-                ComputerController firstController(policyA);
-                ComputerController secondController(policyB);
+                ComputerController firstController(policyA, config.difficultyA);
+                ComputerController secondController(policyB, config.difficultyB);
                 std::vector<Controller*> controllers{&firstController, &secondController};
 
                 const auto firstSeat = playMatchInternal(
@@ -801,8 +983,8 @@ bool runArena(const ArenaConfig& config)
                     seriesSeeds[seriesIndex],
                     nullptr);
 
-                ComputerController swappedFirst(policyB);
-                ComputerController swappedSecond(policyA);
+                ComputerController swappedFirst(policyB, config.difficultyB);
+                ComputerController swappedSecond(policyA, config.difficultyA);
                 std::vector<Controller*> swappedControllers{&swappedFirst, &swappedSecond};
                 const auto secondSeat = playMatchInternal(
                     {"Policy B", "Policy A"},
@@ -852,6 +1034,10 @@ bool runArena(const ArenaConfig& config)
         totals.second.games == 0 ? 0.0 : static_cast<double>(totals.second.pointsFor) /
                                        static_cast<double>(totals.second.games);
 
+    if (config.difficultyA)
+        std::cout << "Bot A difficulty: " << computerDifficultyName(*config.difficultyA) << "\n";
+    if (config.difficultyB)
+        std::cout << "Bot B difficulty: " << computerDifficultyName(*config.difficultyB) << "\n";
     std::cout << "Policy A: " << describePolicy(policyA) << "\n";
     std::cout << "Policy B: " << describePolicy(policyB) << "\n";
     std::cout << "Games: " << totals.first.games << " (" << seriesCount << " mirrored series)\n";

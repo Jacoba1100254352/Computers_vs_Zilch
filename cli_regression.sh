@@ -41,6 +41,8 @@ output="$(expect_success "$BIN" --help)"
 contains "$output" "Usage:"
 contains "$output" "--opening-score"
 contains "$output" "--stealing BOOL"
+contains "$output" "--difficulty LEVEL"
+contains "$output" "--bot-a LEVEL"
 
 output="$(expect_success "$BIN" arena --games 2 --threads 1 --seed 1 --score-limit 1000)"
 contains "$output" "Policy A win rate: 0.500"
@@ -51,6 +53,16 @@ output="$(expect_success "$BIN" arena --games 2 --threads 1 --seed 2 --score-lim
     --first-roll-bust disabled --final-chase no --allow-ties 0 --stealing enabled)"
 contains "$output" "Policy A win rate: 0.500"
 
+output="$(expect_success "$BIN" arena --bot-a hard --bot-b medium --games 2 --threads 1 \
+    --seed 41 --score-limit 1000 --opening-score 0)"
+contains "$output" "Bot A difficulty: Hard"
+contains "$output" "Bot B difficulty: Medium"
+contains "$output" "thresholds=200,1021,1128,1506,2130,2130"
+
+output="$(expect_success "$BIN" arena --bot-a hard --bot-b medium --games 2 --threads 1 \
+    --seed 42 --score-limit 1000 --opening-score 0 --stealing on)"
+contains "$output" "thresholds=313,313,1106,1360,1360,1376"
+
 expect_failure "Value out of range for --games" "$BIN" arena --games 1 --threads 1 --seed 1 --score-limit 1000
 expect_failure "Invalid numeric value for --games" "$BIN" arena --games -2 --threads 1 --seed 1 --score-limit 1000
 expect_failure "Unknown option: --bogus" "$BIN" arena --bogus true
@@ -59,6 +71,10 @@ expect_failure "Value out of range for --opening-score" "$BIN" arena --games 2 -
 expect_failure "Value out of range for --opening-score" "$BIN" play --score-limit 1000 --opening-score 1001
 expect_failure "Invalid boolean value for --stealing" "$BIN" arena --games 2 --stealing maybe
 expect_failure "Invalid boolean value for --final-chase" "$BIN" train --final-chase maybe
+expect_failure "Invalid computer difficulty for --difficulty" "$BIN" play --difficulty expert
+expect_failure "Invalid computer difficulty for --bot-a" "$BIN" arena --bot-a expert --games 2
+expect_failure "--policy cannot be combined with --difficulty" "$BIN" play --policy "$POLICY" --difficulty hard
+expect_failure "--policy-a cannot be combined with --bot-a" "$BIN" arena --policy-a "$POLICY" --bot-a hard --games 2
 expect_failure "At least one scoring rule must be enabled" "$BIN" arena --games 2 \
     --straight off --three-pairs off --multiples off --singles off
 
@@ -100,5 +116,10 @@ output="$(printf '' | "$BIN" play --seed 5 --score-limit 1000 --opening-score 0 
     --first-roll-bust true --final-chase on --allow-ties yes --stealing off \
     --policy "$POLICY" 2>&1)" || fail "play should exit cleanly on closed input"
 contains "$output" "Input stream closed. Exiting Zilch."
+
+output="$(printf '' | "$BIN" play --difficulty easy --seed 5 --score-limit 1000 --opening-score 0 2>&1)" || \
+    fail "named Easy play should exit cleanly on closed input"
+contains "$output" "Using Easy computer preset"
+contains "$output" "thresholds=600,600,600,600,600,600"
 
 echo "CLI regression checks passed."

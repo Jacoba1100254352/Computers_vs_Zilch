@@ -212,11 +212,16 @@ Boolean values accept `on`/`off`, `true`/`false`, `yes`/`no`, `enabled`/`disable
 ```bash
 ./build/zilch play
 ./build/zilch play --name Jacob --score-limit 7000
+./build/zilch play --difficulty easy
+./build/zilch play --difficulty medium
+./build/zilch play --difficulty hard --stealing on
 ./build/zilch play --policy trained_policy.cfg
 ./build/zilch play --opening-score 750 --stealing on
 ```
 
-If `trained_policy.cfg` exists in the project root, `play` uses it automatically.
+The named levels are intended for human play. Easy takes every available scoring option and normally banks at 600 points. Medium adds score-aware finish, buffer, and staging choices. Hard combines those choices with the strongest tracked policy for the selected standard or Stealing rules.
+
+`--difficulty` and `--policy` are mutually exclusive. With neither option, `play` preserves its legacy behavior: it loads `trained_policy.cfg` from the project root when present and otherwise uses the built-in baseline. An explicit policy path runs the policy directly without named-level endgame heuristics, which keeps research comparisons reproducible.
 During option selection, enter `all` or `a` to apply the highest-scoring remaining options until no more scoring choices are available. Enter `?` to reprint the current options.
 
 ## Train By Self-Play
@@ -234,12 +239,16 @@ Training evaluates policies in parallel across matches, ranks them by self-play 
 ## Compare Policies
 
 ```bash
+./build/zilch arena --bot-a hard --bot-b medium --games 400
+./build/zilch arena --bot-a hard --bot-b medium --stealing on --games 400
 ./build/zilch arena --policy-a trained_policy.cfg --policy-b other_policy.cfg --games 400
 ./build/zilch arena --stealing on --opening-score 750 --games 400
 ```
 
 `arena` runs same-seed mirrored seat order, so each policy gets the same number of first-player and second-player games against paired dice streams.
-`--games` must be even; invalid policy files fail instead of silently falling back to baseline.
+Use `--bot-a` and `--bot-b` to select named levels, or `--policy-a` and `--policy-b` to compare exact policy files. A named selector and explicit policy path are mutually exclusive for the same seat. `--games` must be even; invalid difficulty names and policy files fail instead of silently falling back to baseline.
+
+See [STRATEGY.md](STRATEGY.md) for the exact named-level behavior, tracked policy provenance, deterministic validation commands, and research limitations.
 
 ## Notes
 

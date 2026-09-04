@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <iosfwd>
 #include <optional>
+#include <string_view>
 
 namespace zilch {
 
@@ -19,6 +20,12 @@ enum class PostSelectionDecision {
 enum class TurnStartDecision {
     FreshRoll,
     AcceptSteal,
+};
+
+enum class ComputerDifficulty {
+    Easy,
+    Medium,
+    Hard,
 };
 
 struct Policy {
@@ -35,6 +42,9 @@ struct Policy {
 };
 
 [[nodiscard]] std::string describePolicy(const Policy& policy);
+[[nodiscard]] std::string_view computerDifficultyName(ComputerDifficulty difficulty);
+[[nodiscard]] std::optional<ComputerDifficulty> parseComputerDifficulty(std::string_view value);
+[[nodiscard]] Policy policyForDifficulty(ComputerDifficulty difficulty, bool stealingEnabled = false);
 bool loadPolicy(const std::string& path, Policy& policy);
 bool savePolicy(const std::string& path, const Policy& policy);
 
@@ -66,7 +76,10 @@ private:
 
 class ComputerController final : public Controller {
 public:
-    explicit ComputerController(Policy policy) : policy_(std::move(policy)) {}
+    explicit ComputerController(
+        Policy policy,
+        std::optional<ComputerDifficulty> difficulty = std::nullopt)
+        : policy_(std::move(policy)), difficulty_(difficulty) {}
 
     TurnStartDecision decideTurnStart(GameManager& game) override;
     std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;
@@ -75,13 +88,16 @@ public:
         const std::vector<ScoringOption>& remainingOptions) override;
 
     [[nodiscard]] const Policy& policy() const { return policy_; }
+    [[nodiscard]] std::optional<ComputerDifficulty> difficulty() const { return difficulty_; }
 
 private:
     [[nodiscard]] double optionUtility(const GameManager& game, const ScoringOption& option) const;
     [[nodiscard]] double rollUtility(const GameManager& game) const;
     [[nodiscard]] int bankThreshold(const GameManager& game) const;
+    [[nodiscard]] std::optional<PostSelectionDecision> endgameDecision(const GameManager& game) const;
 
     Policy policy_;
+    std::optional<ComputerDifficulty> difficulty_;
 };
 
 struct MatchResult {
@@ -95,6 +111,7 @@ struct PlayConfig {
     std::uint32_t scoreLimit{5000};
     std::uint64_t seed{0};
     std::optional<std::string> policyPath;
+    std::optional<ComputerDifficulty> difficulty;
     RuleConfig ruleConfig;
 };
 
@@ -103,6 +120,8 @@ bool runHumanVsComputer(const PlayConfig& config);
 struct ArenaConfig {
     std::optional<std::string> policyAPath;
     std::optional<std::string> policyBPath;
+    std::optional<ComputerDifficulty> difficultyA;
+    std::optional<ComputerDifficulty> difficultyB;
     std::size_t games{200};
     std::size_t threads{0};
     std::uint32_t scoreLimit{5000};

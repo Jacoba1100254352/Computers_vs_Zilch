@@ -33,6 +33,7 @@ if(BUILD_TESTING)
         InputClosed.h)
     target_include_directories(zilch_tests PRIVATE ${PROJECT_SOURCE_DIR})
     target_link_libraries(zilch_tests PRIVATE Threads::Threads)
+    target_compile_definitions(zilch_tests PRIVATE ZILCH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
     if(MSVC)
         target_compile_options(zilch_tests PRIVATE /W4 /permissive-)
