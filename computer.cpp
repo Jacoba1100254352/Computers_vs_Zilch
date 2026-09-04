@@ -121,6 +121,11 @@ std::string lowercase(std::string value)
     return value;
 }
 
+bool isSecondPersonName(const std::string_view name)
+{
+    return lowercase(trim(std::string(name))) == "you";
+}
+
 bool parseStrictInt(const std::string& value, int& output)
 {
     std::size_t parsed = 0;
@@ -227,7 +232,7 @@ void playTurn(GameManager& game, Controller& controller, std::mt19937& rng, std:
     auto& player = game.currentPlayer();
 
     if (output) {
-        *output << "\n== " << player.name() << "'s turn ==\n";
+        *output << "\n== " << formatPlayerTurn(player.name()) << " ==\n";
         *output << "Scoreboard: " << formatScoreboard(game) << "\n";
     }
 
@@ -237,20 +242,26 @@ void playTurn(GameManager& game, Controller& controller, std::mt19937& rng, std:
 
         if (!game.canCurrentPlayerSteal()) {
             if (output) {
-                *output << "Stealing is unavailable until " << player.name() << " has banked "
+                *output << "Stealing is unavailable until "
+                        << formatPlayerAction(player.name(), "have banked", "has banked") << ' '
                         << game.ruleConfig().openingScoreLimit() << " points. Starting fresh.\n";
             }
             game.declineStealOffer();
         } else if (controller.decideTurnStart(game) == TurnStartDecision::AcceptSteal &&
                    game.acceptStealOffer()) {
             if (output) {
-                *output << player.name() << " accepts the continuation: " << carriedScore
+                *output << formatPlayerAction(player.name(), "accept", "accepts")
+                        << " the continuation: " << carriedScore
                         << " round points at risk with " << carriedDice << " dice.\n";
             }
         } else {
             game.declineStealOffer();
             if (output)
-                *output << player.name() << " declines the continuation and starts with six dice.\n";
+                *output << formatPlayerAction(
+                               player.name(),
+                               "decline the continuation and start",
+                               "declines the continuation and starts")
+                        << " with six dice.\n";
         }
     }
 
@@ -308,7 +319,8 @@ void playTurn(GameManager& game, Controller& controller, std::mt19937& rng, std:
                 const auto bankedScore = player.score().roundScore();
                 game.bankCurrentScore();
                 if (output) {
-                    *output << player.name() << " banks " << bankedScore << " points.\n";
+                    *output << formatPlayerAction(player.name(), "bank", "banks") << ' '
+                            << bankedScore << " points.\n";
                     *output << "Scoreboard: " << formatScoreboard(game) << "\n";
                 }
                 break;
@@ -397,7 +409,11 @@ MatchResult playMatchInternal(
         for (std::size_t index = 0; index < game.players().size(); ++index)
             *output << "  " << game.players()[index].name() << ": " << result.finalScores[index] << '\n';
         if (result.winnerIndex) {
-            *output << game.players()[*result.winnerIndex].name() << " wins.\n";
+            *output << formatPlayerAction(
+                           game.players()[*result.winnerIndex].name(),
+                           "win",
+                           "wins")
+                    << ".\n";
         } else {
             *output << "The game ends in a tie.\n";
         }
@@ -407,6 +423,22 @@ MatchResult playMatchInternal(
 }
 
 } // namespace
+
+std::string formatPlayerTurn(const std::string_view playerName)
+{
+    if (isSecondPersonName(playerName))
+        return "Your turn";
+    return std::string(playerName) + "'s turn";
+}
+
+std::string formatPlayerAction(
+    const std::string_view playerName,
+    const std::string_view secondPersonPredicate,
+    const std::string_view thirdPersonPredicate)
+{
+    return std::string(playerName) + ' ' +
+           std::string(isSecondPersonName(playerName) ? secondPersonPredicate : thirdPersonPredicate);
+}
 
 std::string_view computerDifficultyName(const ComputerDifficulty difficulty)
 {

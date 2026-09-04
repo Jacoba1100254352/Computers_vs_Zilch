@@ -21,6 +21,17 @@ $haystack" ;;
     esac
 }
 
+excludes() {
+    haystack="$1"
+    needle="$2"
+    case "$haystack" in
+        *"$needle"*) fail "expected output not to contain: $needle
+Actual output:
+$haystack" ;;
+        *) ;;
+    esac
+}
+
 expect_success() {
     output="$("$@" 2>&1)" || fail "expected success: $*
 $output"
@@ -116,6 +127,12 @@ output="$(printf '' | "$BIN" play --seed 5 --score-limit 1000 --opening-score 0 
     --first-roll-bust true --final-chase on --allow-ties yes --stealing off \
     --policy "$POLICY" 2>&1)" || fail "play should exit cleanly on closed input"
 contains "$output" "Input stream closed. Exiting Zilch."
+contains "$output" "== Your turn =="
+excludes "$output" "You's turn"
+
+output="$(printf '' | "$BIN" play --name Ada --seed 5 --score-limit 1000 --opening-score 0 \
+    --policy "$POLICY" 2>&1)" || fail "named play should exit cleanly on closed input"
+contains "$output" "== Ada's turn =="
 
 output="$(printf '' | "$BIN" play --difficulty easy --seed 5 --score-limit 1000 --opening-score 0 2>&1)" || \
     fail "named Easy play should exit cleanly on closed input"

@@ -596,6 +596,27 @@ void testHumanControllerShortcuts()
         "the baseline AI should decline a low-value continuation deterministically");
 }
 
+void testSecondPersonOutputGrammar()
+{
+    expect(zilch::formatPlayerTurn("You") == "Your turn",
+           "the default human name should use a second-person turn heading");
+    expect(zilch::formatPlayerTurn("yOu") == "Your turn",
+           "second-person name detection should be case-insensitive");
+    expect(zilch::formatPlayerTurn("Ada") == "Ada's turn",
+           "ordinary names should keep a possessive turn heading");
+
+    expect(zilch::formatPlayerAction("You", "accept", "accepts") == "You accept",
+           "the default human name should use the second-person accept verb");
+    expect(zilch::formatPlayerAction("YOU", "decline", "declines") == "YOU decline",
+           "case-insensitive second-person names should use the second-person decline verb");
+    expect(zilch::formatPlayerAction("You", "bank", "banks") == "You bank",
+           "the default human name should use the second-person bank verb");
+    expect(zilch::formatPlayerAction("You", "win", "wins") == "You win",
+           "the default human name should use the second-person win verb");
+    expect(zilch::formatPlayerAction("Ada", "bank", "banks") == "Ada banks",
+           "ordinary names should retain third-person verbs");
+}
+
 void testNamedDifficultyPoliciesMatchResearchArtifacts()
 {
     expect(
@@ -869,6 +890,7 @@ int main()
         testRuleConfigAndDiceBasics();
         testPolicyPersistenceValidation();
         testHumanControllerShortcuts();
+        testSecondPersonOutputGrammar();
         testNamedDifficultyPoliciesMatchResearchArtifacts();
         testEasyScoresEverythingAndRecognizesAWin();
         testMediumAndHardEndgameAwareness();

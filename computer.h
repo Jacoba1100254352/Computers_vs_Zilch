@@ -42,6 +42,11 @@ struct Policy {
 };
 
 [[nodiscard]] std::string describePolicy(const Policy& policy);
+[[nodiscard]] std::string formatPlayerTurn(std::string_view playerName);
+[[nodiscard]] std::string formatPlayerAction(
+    std::string_view playerName,
+    std::string_view secondPersonPredicate,
+    std::string_view thirdPersonPredicate);
 [[nodiscard]] std::string_view computerDifficultyName(ComputerDifficulty difficulty);
 [[nodiscard]] std::optional<ComputerDifficulty> parseComputerDifficulty(std::string_view value);
 [[nodiscard]] Policy policyForDifficulty(ComputerDifficulty difficulty, bool stealingEnabled = false);
