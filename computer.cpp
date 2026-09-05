@@ -8,6 +8,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -237,6 +238,56 @@ std::optional<ChainEnumeration> enumerateChain(const GameManager& source)
     }
     cache.emplace(key, result);
     return result;
+}
+
+double nextRollBustProbability(const GameManager& source)
+{
+    if (const auto chain = enumerateChain(source))
+        return static_cast<double>(chain->busts) / chain->outcomes;
+
+    ChainEnumerationKey key;
+    key.diceCount = source.currentPlayer().dice().numDiceInPlay();
+    for (std::uint16_t face = 1; face <= 6; ++face)
+        key.savedScores[face - 1] = source.savedMultipleScore(face);
+    const auto& rules = source.ruleConfig();
+    key.scoringRules = {rules.straightEnabled(), rules.threePairsEnabled(),
+                        rules.multiplesEnabled(), rules.singlesEnabled()};
+    thread_local std::map<ChainEnumerationKey, double> cache;
+    if (const auto found = cache.find(key); found != cache.end())
+        return found->second;
+
+    std::uint32_t outcomes = 1;
+    for (std::uint16_t die = 0; die < key.diceCount; ++die)
+        outcomes *= 6;
+    std::uint32_t busts = 0;
+    for (std::uint32_t outcome = 0; outcome < outcomes; ++outcome) {
+        auto game = source;
+        auto& counts = game.currentPlayer().dice().diceSetMap();
+        counts.clear();
+        auto encoded = outcome;
+        for (std::uint16_t die = 0; die < key.diceCount; ++die) {
+            ++counts[static_cast<std::uint16_t>(encoded % 6 + 1)];
+            encoded /= 6;
+        }
+        if (!Checker(game).hasAvailableOption())
+            ++busts;
+    }
+    const auto probability = static_cast<double>(busts) / outcomes;
+    cache.emplace(key, probability);
+    return probability;
+}
+
+bool isGuaranteedOutrightWin(const GameManager& game)
+{
+    if (!game.canBankCurrentScore())
+        return false;
+    const auto& score = game.currentPlayer().score();
+    const auto total = static_cast<std::uint64_t>(score.permanentScore()) + score.roundScore();
+    if (game.finalRoundActive() && game.wouldEndAfterCurrentTurn())
+        return total > maxOpponentScore(game, game.currentIndex());
+    if (!game.ruleConfig().finalChaseEnabled() || game.playerCount() == 1)
+        return total >= game.scoreLimit();
+    return false;
 }
 
 void printOptions(std::ostream& output, const std::vector<ScoringOption>& options)
@@ -909,6 +960,8 @@ TurnStartDecision ComputerController::decideTurnStart(GameManager& game)
 {
     pendingBank_ = false;
     pendingSafeFinish_ = false;
+    pendingJointSelections_.clear();
+    pendingJointDecision_.reset();
     if (difficulty_ == ComputerDifficulty::Easy) {
         return game.stealOfferScore() >= 600 ? TurnStartDecision::AcceptSteal :
                                                TurnStartDecision::FreshRoll;
@@ -951,13 +1004,16 @@ double ComputerController::rollUtility(const GameManager& game) const
            policy_.remainingDiceWeight * static_cast<double>(game.currentPlayer().dice().numDiceInPlay());
 }
 
-double ComputerController::bankThreshold(const GameManager& game) const
+double ComputerController::bankThreshold(const GameManager& game, const bool accountForUnclaimedScore) const
 {
     const auto nextDiceCount = game.currentPlayer().dice().numDiceInPlay();
     auto threshold = static_cast<double>(policy_.bankThresholdByDice[nextDiceCount]);
 
     if (features_.chainRiskWeight > 0 && researchFeaturesEnabled(game)) {
-        if (const auto estimate = researchChainRiskEstimate(game)) {
+        auto estimateState = game;
+        if (!accountForUnclaimedScore)
+            estimateState.currentPlayer().dice().diceSetMap().clear();
+        if (const auto estimate = researchChainRiskEstimate(estimateState)) {
             const auto delta = estimate->breakEvenTurnScore - threshold;
             // Research ablations either raise only or blend both directions.
             // Keep the released score-position adjustments and clamp below.
@@ -1033,8 +1089,85 @@ std::optional<PostSelectionDecision> ComputerController::endgameDecision(const G
     return std::nullopt;
 }
 
+void ComputerController::prepareJointSelection(const GameManager& game, const bool requireSelection)
+{
+    struct Plan {
+        std::vector<std::size_t> selections;
+        PostSelectionDecision decision{PostSelectionDecision::Roll};
+        double utility{-std::numeric_limits<double>::infinity()};
+        std::uint32_t roundScore{0};
+        std::uint16_t nextDice{0};
+        bool outrightWin{false};
+        bool valid{false};
+    };
+    Plan best;
+    const auto consider = [&](Plan candidate) {
+        const bool betterScore = candidate.utility > best.utility + 1e-9;
+        const bool sameScore = std::abs(candidate.utility - best.utility) <= 1e-9;
+        const bool betterTie = sameScore &&
+            ((candidate.decision == PostSelectionDecision::Bank && best.decision != PostSelectionDecision::Bank) ||
+             (candidate.decision == best.decision &&
+              (candidate.roundScore > best.roundScore ||
+               (candidate.roundScore == best.roundScore && candidate.nextDice > best.nextDice))));
+        if (!best.valid || (candidate.outrightWin && !best.outrightWin) ||
+            (candidate.outrightWin == best.outrightWin && (betterScore || betterTie))) {
+            best = std::move(candidate);
+        }
+    };
+    std::vector<std::size_t> path;
+    std::function<void(const GameManager&)> visit = [&](const GameManager& state) {
+        if (!requireSelection || !path.empty()) {
+            const bool canBank = state.canBankCurrentScore();
+            const auto endgame = canBank ? endgameDecision(state) : std::nullopt;
+            const auto points = state.currentPlayer().score().roundScore();
+            const auto dice = state.currentPlayer().dice().numDiceInPlay();
+            const bool certainWin = isGuaranteedOutrightWin(state);
+            if (canBank && (certainWin || endgame != PostSelectionDecision::Roll)) {
+                consider({path, PostSelectionDecision::Bank, static_cast<double>(points),
+                          points, dice, certainWin, true});
+            }
+            if (!certainWin && endgame != PostSelectionDecision::Bank) {
+                const auto probability = nextRollBustProbability(state);
+                // Each possible keep/roll state is compared in point units.
+                // Chain calibration here uses E/p: unclaimed dice are already
+                // represented by distinct bank paths, so subtracting them again
+                // would count their opportunity cost twice.
+                const auto utility = points + probability * (bankThreshold(state, false) - points);
+                consider({path, PostSelectionDecision::Roll, utility, points, dice, false, true});
+            }
+        }
+        auto selectable = state;
+        const auto options = Checker(selectable).availableOptions();
+        for (std::size_t index = 0; index < options.size(); ++index) {
+            auto child = state;
+            Checker(child).applyOption(options[index]);
+            path.push_back(index);
+            visit(child);
+            path.pop_back();
+        }
+    };
+    visit(game);
+    if (!best.valid)
+        throw std::logic_error("Joint research planning requires a legal scoring selection or post-selection action.");
+    pendingJointSelections_ = std::move(best.selections);
+    pendingJointDecision_ = best.decision;
+}
+
 std::size_t ComputerController::chooseOption(GameManager& game, const std::vector<ScoringOption>& options)
 {
+    if (features_.jointSelection && researchFeaturesEnabled(game)) {
+        if (!game.selectedOption()) {
+            pendingJointSelections_.clear();
+            pendingJointDecision_.reset();
+        }
+        if (!pendingJointDecision_)
+            prepareJointSelection(game, true);
+        if (pendingJointSelections_.empty())
+            throw std::logic_error("Joint research selection was called without a planned scoring option.");
+        const auto choice = pendingJointSelections_.front();
+        pendingJointSelections_.erase(pendingJointSelections_.begin());
+        return choice;
+    }
     if (!game.selectedOption()) {
         pendingBank_ = false;
         pendingSafeFinish_ = false;
@@ -1066,6 +1199,15 @@ PostSelectionDecision ComputerController::decideAfterSelection(
     GameManager& game,
     const std::vector<ScoringOption>& remainingOptions)
 {
+    if (features_.jointSelection && researchFeaturesEnabled(game)) {
+        if (!pendingJointDecision_)
+            prepareJointSelection(game, false);
+        if (!pendingJointSelections_.empty())
+            return PostSelectionDecision::SelectAgain;
+        const auto decision = *pendingJointDecision_;
+        pendingJointDecision_.reset();
+        return decision;
+    }
     if (!game.canBankCurrentScore() && !pendingSafeFinish_)
         pendingBank_ = false;
     if (!pendingBank_ && canSecureWinByCollecting(game)) {

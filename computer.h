@@ -59,6 +59,9 @@ struct ResearchFeatures {
     double chainRiskWeight{0.0};
     bool safeFinishCollection{false};
     bool lowerChainThresholds{false};
+    // Joint planning always prioritizes a guaranteed outright win, even when
+    // the independent safe-finish-only ablation above is disabled.
+    bool jointSelection{false};
 };
 
 struct ChainRiskEstimate {
@@ -120,10 +123,11 @@ public:
 private:
     [[nodiscard]] double optionUtility(const GameManager& game, const ScoringOption& option) const;
     [[nodiscard]] double rollUtility(const GameManager& game) const;
-    [[nodiscard]] double bankThreshold(const GameManager& game) const;
+    [[nodiscard]] double bankThreshold(const GameManager& game, bool accountForUnclaimedScore = true) const;
     [[nodiscard]] std::optional<PostSelectionDecision> endgameDecision(const GameManager& game) const;
     [[nodiscard]] bool researchFeaturesEnabled(const GameManager& game) const;
     [[nodiscard]] bool canSecureWinByCollecting(const GameManager& game) const;
+    void prepareJointSelection(const GameManager& game, bool requireSelection);
 
     Policy policy_;
     std::optional<ComputerDifficulty> difficulty_;
@@ -131,6 +135,8 @@ private:
     ResearchFeatures features_;
     bool pendingBank_{false};
     bool pendingSafeFinish_{false};
+    std::vector<std::size_t> pendingJointSelections_;
+    std::optional<PostSelectionDecision> pendingJointDecision_;
 };
 
 struct MatchResult {

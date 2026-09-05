@@ -146,6 +146,7 @@ Config parse(const int argc, const char* const* argv)
                 << "  --chain-risk-a N --chain-risk-b N  Research chain-risk weights (default 0)\n"
                 << "  --chain-mode-a raise|blend --chain-mode-b raise|blend (default raise)\n"
                 << "  --safe-finish-a true|false --safe-finish-b true|false (default false)\n"
+                << "  --joint-selection-a true|false --joint-selection-b true|false (default false)\n"
                 << "  --target N --opening-score N --sets on|off --stealing on|off\n"
                 << "  --final-chase on|off --first-roll-mercy on|off --ties on|off\n"
                 << "  --at-risk N --banked-a N --banked-b N  State/selection modes\n"
@@ -202,6 +203,10 @@ Config parse(const int argc, const char* const* argv)
             config.featuresA.safeFinishCollection = boolean(value);
         else if (flag == "--safe-finish-b")
             config.featuresB.safeFinishCollection = boolean(value);
+        else if (flag == "--joint-selection-a")
+            config.featuresA.jointSelection = boolean(value);
+        else if (flag == "--joint-selection-b")
+            config.featuresB.jointSelection = boolean(value);
         else if (flag == "--chain-mode-a" || flag == "--chain-mode-b") {
             if (value != "raise" && value != "blend")
                 throw std::invalid_argument("Chain mode must be raise or blend.");
@@ -318,6 +323,9 @@ void printPolicy(std::ostream& output, const zilch::Policy& policy,
            << ",\"chain_mode\":" << quote(features.lowerChainThresholds ? "blend" : "raise")
            << ",\"lower_chain_thresholds\":" << (features.lowerChainThresholds ? "true" : "false")
            << ",\"safe_finish_collection\":" << (features.safeFinishCollection ? "true" : "false")
+           << ",\"joint_selection\":" << (features.jointSelection ? "true" : "false")
+           << ",\"effective_safe_finish_collection\":"
+           << (features.safeFinishCollection || features.jointSelection ? "true" : "false")
            << ",\"bank_thresholds\":[";
     for (std::size_t index = 1; index <= 6; ++index)
         output << (index == 1 ? "" : ",") << policy.bankThresholdByDice[index];

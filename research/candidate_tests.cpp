@@ -214,6 +214,110 @@ void featureValidation()
     }
 }
 
+struct PlannedResult {
+    GameManager game;
+    PostSelectionDecision decision;
+};
+
+PlannedResult selectRoll(GameManager game, ComputerController& controller)
+{
+    for (unsigned int step = 0; step < 6; ++step) {
+        const auto options = zilch::Checker(game).availableOptions();
+        expect(!options.empty(), "A planned SelectAgain must still have a legal option.");
+        const auto index = controller.chooseOption(game, options);
+        expect(index < options.size(), "Committed joint path must reference the actual current options.");
+        zilch::Checker(game).applyOption(options[index]);
+        const auto decision = controller.decideAfterSelection(game, zilch::Checker(game).availableOptions());
+        if (decision != PostSelectionDecision::SelectAgain)
+            return {std::move(game), decision};
+    }
+    throw std::runtime_error("Joint selection did not finish within six selections.");
+}
+
+void jointSelectionAndEndgames()
+{
+    const auto hard = zilch::policyForDifficulty(ComputerDifficulty::Hard);
+    ComputerController joint(hard, ComputerDifficulty::Hard, std::nullopt, {1.0, false, false, true});
+    auto extension = chainState(6, 3, 600);
+    extension.currentPlayer().dice().diceSetMap() = {{1, 1}, {5, 1}, {6, 1}};
+    extension.setSelectedOption(false);
+    const auto hot = selectRoll(extension, joint);
+    expect(hot.decision == PostSelectionDecision::Roll &&
+               hot.game.currentPlayer().score().roundScore() == 1350 &&
+               hot.game.currentPlayer().dice().numDiceInPlay() == 6 && !hot.game.hasSavedMultiple(6),
+           "Joint search must consider collecting the chain extension plus both singles for hot dice.");
+    expect(extension.currentPlayer().score().roundScore() == 600 && extension.hasSavedMultiple(6),
+           "Joint search must leave its source checkpoint unchanged.");
+
+    auto triple = chainState(6, 3, 0);
+    triple.clearSavedMultiples();
+    triple.manageDiceCount(6);
+    triple.currentPlayer().dice().diceSetMap() = {{2, 1}, {3, 1}, {5, 1}, {6, 3}};
+    triple.setSelectedOption(false);
+    const auto preserve = selectRoll(triple, joint);
+    expect(preserve.decision == PostSelectionDecision::Roll &&
+               preserve.game.currentPlayer().score().roundScore() == 600 &&
+               preserve.game.currentPlayer().dice().numDiceInPlay() == 3,
+           "Joint search must also be able to leave a five unclaimed while keeping the stronger triple-six chain.");
+
+    // Intrinsic guaranteed-win priority is tested with safeFinishCollection
+    // deliberately false, so no lucrative Roll can discard a certain win.
+    const auto finish = selectRoll(finishState(4900, 5500), joint);
+    expect(finish.decision == PostSelectionDecision::Bank &&
+               finish.game.currentPlayer().score().roundScore() == 650,
+           "Joint planning must collect the five to secure an outright final-chase win.");
+    const auto immediate = selectRoll(finishState(4350, 0, false), joint);
+    expect(immediate.decision == PostSelectionDecision::Bank &&
+               immediate.game.currentPlayer().score().roundScore() == 650,
+           "Joint planning must prioritize an available immediate win with Final Chase off.");
+    const auto noTie = selectRoll(finishState(4850, 5500), joint);
+    expect(noTie.decision == PostSelectionDecision::Roll,
+           "An equal final total with ties off cannot become a joint bank candidate.");
+    auto tieGame = finishState(4850, 5500);
+    tieGame.ruleConfig().setAllowTies(true);
+    tieGame.manageDiceCount(1);
+    tieGame.currentPlayer().score().setRoundScore(550);
+    tieGame.currentPlayer().dice().diceSetMap() = {{1, 1}};
+    const auto allowedTie = selectRoll(tieGame, joint);
+    expect(allowedTie.decision == PostSelectionDecision::Bank &&
+               allowedTie.game.currentPlayer().score().roundScore() == 650,
+           "Existing final-chase tie acceptance remains available when ties are enabled.");
+
+    auto shortGame = chainState(6, 3, 4850);
+    shortGame.setScoreLimit(5000);
+    shortGame.players()[0].score() = zilch::Score{};
+    shortGame.players()[1].score() = zilch::Score{};
+    shortGame.players()[1].score().addPermanentScore(4400);
+    shortGame.clearSavedMultiples();
+    shortGame.manageDiceCount(6);
+    shortGame.currentPlayer().score().setRoundScore(4850);
+    shortGame.currentPlayer().dice().diceSetMap() = {{1, 2}, {2, 1}, {3, 1}, {4, 1}, {6, 1}};
+    shortGame.setSelectedOption(false);
+    const auto stopShort = selectRoll(shortGame, joint);
+    expect(stopShort.decision == PostSelectionDecision::Bank &&
+               stopShort.game.currentPlayer().score().roundScore() == 4950 &&
+               stopShort.game.currentPlayer().dice().numDiceInPlay() == 5,
+           "Joint search must consider a legal stop-short bank subset without the old collect-all latch.");
+
+    auto unopened = triple;
+    unopened.ruleConfig().setOpeningScoreLimit(3000);
+    const auto opening = selectRoll(unopened, joint);
+    expect(opening.decision == PostSelectionDecision::Roll && !opening.game.canBankCurrentScore(),
+           "Joint search must keep rolling when no selection satisfies the opening minimum.");
+    auto stealing = extension;
+    stealing.ruleConfig().setStealingEnabled(true);
+    ComputerController standardSteal(zilch::policyForDifficulty(ComputerDifficulty::Hard, true),
+                                     ComputerDifficulty::Hard);
+    ComputerController jointSteal(zilch::policyForDifficulty(ComputerDifficulty::Hard, true),
+                                  ComputerDifficulty::Hard, std::nullopt, {1.0, true, true, true});
+    const auto oldSteal = selectRoll(stealing, standardSteal);
+    const auto newSteal = selectRoll(stealing, jointSteal);
+    expect(oldSteal.decision == newSteal.decision &&
+               oldSteal.game.currentPlayer().score().roundScore() == newSteal.game.currentPlayer().score().roundScore() &&
+               oldSteal.game.currentPlayer().dice().numDiceInPlay() == newSteal.game.currentPlayer().dice().numDiceInPlay(),
+           "Joint research must not change the separate Stealing policy.");
+}
+
 } // namespace
 
 int main()
@@ -223,7 +327,8 @@ int main()
         controlledThresholds();
         safeFinishAndLifetime();
         featureValidation();
-        std::cout << "Research candidate scoring, cache, threshold and safe-finish tests passed.\n";
+        jointSelectionAndEndgames();
+        std::cout << "Research candidate scoring, cache, threshold, safe-finish and joint-selection tests passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

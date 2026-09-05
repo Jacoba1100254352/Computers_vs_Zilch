@@ -37,6 +37,7 @@ void parserAndMetadata()
     check(output.find("\"schema_version\":2,\"mode\":\"selection\"") != std::string::npos &&
           output.find("\"at_risk_before_selection\":0") != std::string::npos &&
           output.find("\"saved_multiple_scores\":[0,0,0,0,0,600]") != std::string::npos &&
+          output.find("\"joint_selection\":false,\"effective_safe_finish_collection\":false") != std::string::npos &&
           output.find("\"incumbent_recommendation\":") != std::string::npos &&
           output.find("\"right_minus_left_match_points_paired\":") != std::string::npos,
           "Evidence must include schema, pre-selection score, saved chains, incumbent choice and paired raw moments.");
@@ -49,12 +50,27 @@ void parserAndMetadata()
     }
     check(rejected, "The parser must not silently ignore selection flags in duel mode.");
     const char* features[] = {"zilch_research", "--chain-risk-a", "1.25", "--chain-mode-a", "blend",
-        "--safe-finish-a", "true", "--chain-risk-b", "0.5"};
+        "--safe-finish-a", "true", "--chain-risk-b", "0.5", "--joint-selection-b", "true"};
     const auto experimental = parse(static_cast<int>(std::size(features)), features);
     check(experimental.featuresA.chainRiskWeight == 1.25 && experimental.featuresA.lowerChainThresholds &&
           experimental.featuresA.safeFinishCollection && experimental.featuresB.chainRiskWeight == 0.5 &&
-          !experimental.featuresB.lowerChainThresholds && !experimental.featuresB.safeFinishCollection,
+          !experimental.featuresB.lowerChainThresholds && !experimental.featuresB.safeFinishCollection &&
+          !experimental.featuresA.jointSelection && experimental.featuresB.jointSelection,
           "Research feature flags must be independently scoped to each policy and disabled unless requested.");
+    std::ostringstream policyMetadata;
+    printPolicy(policyMetadata, zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard), std::nullopt,
+                zilch::ComputerDifficulty::Hard, true, experimental.featuresB);
+    check(policyMetadata.str().find("\"safe_finish_collection\":false,\"joint_selection\":true,\"effective_safe_finish_collection\":true") != std::string::npos,
+          "Joint selection must explicitly record its implicit safe-finish protection even when the independent toggle is off.");
+    std::ostringstream safeOnlyMetadata;
+    printPolicy(safeOnlyMetadata, zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard), std::nullopt,
+                zilch::ComputerDifficulty::Hard, true, experimental.featuresA);
+    check(safeOnlyMetadata.str().find("\"safe_finish_collection\":true,\"joint_selection\":false,\"effective_safe_finish_collection\":true") != std::string::npos,
+          "The safe-finish-only control must record its effective protection without implying joint selection.");
+    const char* jointOff[] = {"zilch_research", "--joint-selection-a", "false", "--joint-selection-b", "off"};
+    const auto disabled = parse(static_cast<int>(std::size(jointOff)), jointOff);
+    check(!disabled.featuresA.jointSelection && !disabled.featuresB.jointSelection,
+          "Each joint-selection flag must support an explicit false/off ablation.");
 }
 
 void pairedIdentityAndThreadSeeds()
@@ -75,6 +91,18 @@ void pairedIdentityAndThreadSeeds()
     auto low = engine(123);
     auto high = engine((std::uint64_t{1} << 32) + 123);
     check(low != high, "Both halves of a 64-bit seed must influence the pair's dice generator.");
+}
+
+void jointFeatureReachesController()
+{
+    const char* args[] = {"zilch_research", "--mode", "selection", "--roll", "6,1,5",
+        "--saved-multiples", "0,0,0,0,0,600", "--at-risk", "600", "--banked-a", "1000",
+        "--banked-b", "1000", "--select-left", "6", "--select-right", "6,1,5", "--pairs", "8",
+        "--collect-a", "true", "--collect-b", "true", "--joint-selection-a", "true"};
+    const auto config = parse(static_cast<int>(std::size(args)), args);
+    const auto output = run(config);
+    check(output.find("\"incumbent_recommendation\":{\"selected_dice\":[1,5,6],\"action\":\"roll\",\"score_gain\":750") != std::string::npos,
+          "The joint-selection CLI flag must reach the acting controller and reveal its all-score hot-dice Roll plan.");
 }
 
 void exclusiveEvidenceWrite()
@@ -119,6 +147,7 @@ int main()
     try {
         parserAndMetadata();
         pairedIdentityAndThreadSeeds();
+        jointFeatureReachesController();
         exclusiveEvidenceWrite();
         std::cout << "Selection CLI, paired seeds, metadata, and no-overwrite tests passed.\n";
         return 0;

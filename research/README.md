@@ -107,11 +107,19 @@ Current released Hard includes collection before banking, so explicitly pass
 executable intentionally retains its old false defaults for reproducibility.
 Research-only policy controls are `--chain-risk-a N` / `--chain-risk-b N` (weights
 from 0 through 8, default 0), `--chain-mode-a raise|blend` /
-`--chain-mode-b raise|blend` (default raise), and `--safe-finish-a true|false` /
-`--safe-finish-b true|false` (default false). They are passed independently to the
+`--chain-mode-b raise|blend` (default raise), `--safe-finish-a true|false` /
+`--safe-finish-b true|false` (default false), and
+`--joint-selection-a true|false` / `--joint-selection-b true|false` (default false).
+They are passed independently to the
 actual controllers and recorded in policy metadata. Their implementation applies
 only to named Hard with Stealing off. Defaults do not change the old state or
 duel treatment behavior; additional metadata states that these features are off.
+Joint selection also protects a guaranteed outright finish, even if the separate
+safe-finish-only ablation is false. Every policy records `joint_selection`, the
+requested `safe_finish_collection`, and their logical OR as
+`effective_safe_finish_collection`; the same named-Hard/non-Stealing restriction
+applies to that effective flag. This distinction lets a joint-planning candidate
+be compared honestly with the safe-finish-only control.
 
 Rule options include `--target`, `--opening-score`, `--sets`, `--stealing`,
 `--final-chase`, `--first-roll-mercy`, and `--ties`. Boolean values accept `true`
