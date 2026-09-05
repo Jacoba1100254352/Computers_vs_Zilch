@@ -810,7 +810,7 @@ void testOptionalCollectorBanksAllGuaranteedPoints()
     game.registerRoll();
     setDice(game, {1, 1, 5, 2, 3, 4});
     zilch::Checker checker(game);
-    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard);
+    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard, false);
     zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
 
     auto options = checker.availableOptions();
@@ -837,6 +837,36 @@ void testOptionalCollectorBanksAllGuaranteedPoints()
     expect(game.currentPlayer().score().permanentScore() == 2950, "the extra points should actually be banked");
 }
 
+void testRefinedHardDefaultsAndStealingIsolation()
+{
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Hard, 0, 0, 2800, 6) ==
+               zilch::PostSelectionDecision::Roll,
+           "standard Hard must roll the reported 2800-point hot dice");
+
+    for (const bool stealing : {false, true}) {
+        auto game = makeGame();
+        game.ruleConfig().setStealingEnabled(stealing);
+        game.currentPlayer().score().setRoundScore(2700);
+        game.registerRoll();
+        setDice(game, {1, 1, 5, 2, 3, 4});
+        zilch::Checker checker(game);
+        zilch::ComputerController hard(
+            zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard, stealing),
+            zilch::ComputerDifficulty::Hard);
+        for (;;) {
+            const auto options = checker.availableOptions();
+            checker.applyOption(options[hard.chooseOption(game, options)]);
+            const auto decision = hard.decideAfterSelection(game, checker.availableOptions());
+            if (decision == zilch::PostSelectionDecision::SelectAgain)
+                continue;
+            expect(decision == zilch::PostSelectionDecision::Bank, "both fixtures should bank");
+            break;
+        }
+        expect(game.currentPlayer().score().roundScore() == (stealing ? 2900U : 2950U),
+               "default collection must apply only to non-Stealing Hard");
+    }
+}
+
 void testOptionalCollectorPreservesRollsAndResetsItsPlan()
 {
     const auto policy = zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard);
@@ -844,7 +874,7 @@ void testOptionalCollectorPreservesRollsAndResetsItsPlan()
     game.registerRoll();
     setDice(game, {1, 1, 5, 2, 3, 4});
     zilch::Checker checker(game);
-    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard);
+    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard, false);
     zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
     auto options = checker.availableOptions();
     checker.applyOption(options[collector.chooseOption(game, options)]);
@@ -1063,6 +1093,7 @@ int main()
         testMediumAndHardEndgameAwareness();
         testNamedDifficultyStealChoices();
         testOptionalCollectorBanksAllGuaranteedPoints();
+        testRefinedHardDefaultsAndStealingIsolation();
         testOptionalCollectorPreservesRollsAndResetsItsPlan();
         testOptionalCollectorCommitsThroughHotDice();
         testOptionalCollectorKeepsAnImmediateWinningBank();

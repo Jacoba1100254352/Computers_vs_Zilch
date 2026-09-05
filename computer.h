@@ -84,7 +84,7 @@ public:
     explicit ComputerController(
         Policy policy,
         std::optional<ComputerDifficulty> difficulty = std::nullopt,
-        bool collectBeforeBank = false)
+        std::optional<bool> collectBeforeBank = std::nullopt)
         : policy_(std::move(policy)), difficulty_(difficulty), collectBeforeBank_(collectBeforeBank) {}
 
     TurnStartDecision decideTurnStart(GameManager& game) override;
@@ -104,7 +104,7 @@ private:
 
     Policy policy_;
     std::optional<ComputerDifficulty> difficulty_;
-    bool collectBeforeBank_{false};
+    std::optional<bool> collectBeforeBank_;
     bool pendingBank_{false};
 };
 

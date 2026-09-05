@@ -68,7 +68,7 @@ output="$(expect_success "$BIN" arena --bot-a hard --bot-b medium --games 2 --th
     --seed 41 --score-limit 1000 --opening-score 0)"
 contains "$output" "Bot A difficulty: Hard"
 contains "$output" "Bot B difficulty: Medium"
-contains "$output" "thresholds=200,1021,1128,1506,2130,2130"
+contains "$output" "thresholds=200,1021,1128,1506,2130,5000"
 
 output="$(expect_success "$BIN" arena --bot-a hard --bot-b medium --games 2 --threads 1 \
     --seed 42 --score-limit 1000 --opening-score 0 --stealing on)"

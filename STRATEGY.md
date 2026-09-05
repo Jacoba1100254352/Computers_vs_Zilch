@@ -4,10 +4,33 @@ The named computer levels build on the same policy and rules engine used by
 `play`, `arena`, and `train`. The two tracked Hard policy files are the canonical
 inputs for the browser edition and future strategy comparisons.
 
-The recorded experiments used `main` at
+The historical experiments below used `main` at
 `17a4102b7f2688be010f47ce472a0707cf007e48`, before the named-level layer was
 added. The named-level comparisons below used the parity implementation built
 directly on that exact revision.
+
+## Current hot-dice refinement
+
+Standard Hard now banks near `200,1050,1150,1550,2150,5000` for one through
+six dice, subject to its opening and endgame rules. After its existing scoring
+plan commits to banking, it collects remaining guaranteed scoring points and
+retains that commitment if collecting produces hot dice. Stealing retains its
+separate policy and does not enable this collector. Raw policy-file runs remain
+parameter-only; named Hard enables both endgame and collection.
+
+The frozen refinement earned 51.5992% match points against incumbent Hard in
+500,000 fresh games (250,000 mirrored pairs), with a paired 95% interval of
+51.5289% to 51.6695%. A separate collector-only comparison supports the six-dice
+change itself. The reported 2,800-point hot-dice continuation improved eventual
+match points by 2.505 percentage points in 250,000 paired branch experiments.
+
+All 42 experiments and the frozen policy are retained in the
+[web research record](https://github.com/anderson-webops/zilch.jacobdanderson.net/tree/main/docs/research/hot-dice-2026-09).
+The experiments used clean simulator revision `5e27d7c`, fixed opponents,
+full-precision threshold adjustments, and paired moments for uncertainty.
+They support a targeted two-player non-Stealing refinement, not optimality or
+every custom configuration. Larger four/five-dice thresholds did not improve
+the selected candidate in tuning. See `research/README.md` for the new harness.
 
 ## Named levels
 
@@ -35,7 +58,7 @@ behavior for reproducible research.
 
 File: `trained_policy.cfg`
 
-SHA-256: `0c0020a049773aca3f66fc6915d6509a79bd4a2f55bfe7a3f0a7fddbedd5713b`
+SHA-256: `aff692a2a5efba2777f9963754d026cb7750b2102071bd984f58e69c41c77abe`
 
 Base banking thresholds by dice available for the next roll:
 
@@ -46,9 +69,12 @@ Base banking thresholds by dice available for the next roll:
 | 3 | 1,128 | 1,150 |
 | 4 | 1,506 | 1,550 |
 | 5 | 2,130 | 2,150 |
-| 6 | 2,130 | 2,150 |
+| 6 | 5,000 | 5,000 |
 
-The standard policy scored 58.5621% match points against the built-in baseline
+The historical standard policy (six-dice cutoff 2,130, now archived at
+`research/incumbent-standard-hard.cfg`, SHA-256
+`0c0020a049773aca3f66fc6915d6509a79bd4a2f55bfe7a3f0a7fddbedd5713b`)
+scored 58.5621% match points against the built-in baseline
 in 500,000 two-player games, arranged as 250,000 same-seed mirrored pairs. It
 recorded 291,002 wins, 3,617 ties, and an average margin of +266.0 with seed
 `2026091101`. A rough 95% interval is 58.3690% to 58.7552% when mirrored pairs
@@ -99,7 +125,7 @@ two-player holdout games, with 258,435 wins, 3,657 ties, an average margin of
   --stealing on
 ```
 
-## Three Pairs, also called Sets
+## Historical Three Pairs comparisons
 
 Disabling Three Pairs did not produce evidence for a different public policy.
 The standard Hard policy earned 57.9815% against the baseline over 500,000 games
@@ -124,7 +150,7 @@ The retained policy checks can be reproduced with:
   --stealing on --three-pairs off
 ```
 
-## Named-level validation
+## Historical named-level validation
 
 The named presets were evaluated separately because their explicit finish
 heuristics are intentionally outside the parameter-only policy files:

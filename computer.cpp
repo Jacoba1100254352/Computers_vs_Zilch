@@ -57,7 +57,7 @@ Policy hardStandardPolicy()
 {
     Policy policy;
     policy.name = "best";
-    policy.bankThresholdByDice = {0, 200, 1021, 1128, 1506, 2130, 2130};
+    policy.bankThresholdByDice = {0, 200, 1021, 1128, 1506, 2130, 5000};
     policy.scoreWeight = 1.0045;
     policy.remainingDiceWeight = 36.0805;
     policy.hotDiceWeight = 354.561;
@@ -921,7 +921,9 @@ PostSelectionDecision ComputerController::decideAfterSelection(
     // Once banking is chosen, collect safe points without reconsidering the
     // decision to end the turn when the extra selections change the dice count.
     const auto bankOrCollect = [&]() {
-        if (collectBeforeBank_ && !remainingOptions.empty()) {
+        const auto collect = collectBeforeBank_.value_or(
+            difficulty_ == ComputerDifficulty::Hard && !game.ruleConfig().stealingEnabled());
+        if (collect && !remainingOptions.empty()) {
             pendingBank_ = true;
             return PostSelectionDecision::SelectAgain;
         }
