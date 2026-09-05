@@ -53,6 +53,26 @@ struct Policy {
 bool loadPolicy(const std::string& path, Policy& policy);
 bool savePolicy(const std::string& path, const Policy& policy);
 
+// Explicit opt-in research candidates. Normal game/training callers preserve
+// the released policy until fresh holdouts justify changing its defaults.
+struct ResearchFeatures {
+    double chainRiskWeight{0.0};
+    bool safeFinishCollection{false};
+    bool lowerChainThresholds{false};
+};
+
+struct ChainRiskEstimate {
+    std::uint32_t outcomes{0};
+    std::uint32_t busts{0};
+    std::uint64_t totalNewScore{0};
+    std::uint32_t guaranteedScoreLeft{0};
+    double breakEvenTurnScore{0.0};
+};
+
+// Uses the real Checker for both next-roll scoring and currently unclaimed
+// guaranteed points. Only one-to-three-die saved-multiple states qualify.
+[[nodiscard]] std::optional<ChainRiskEstimate> researchChainRiskEstimate(const GameManager& game);
+
 class Controller {
 public:
     virtual ~Controller() = default;
@@ -84,8 +104,8 @@ public:
     explicit ComputerController(
         Policy policy,
         std::optional<ComputerDifficulty> difficulty = std::nullopt,
-        std::optional<bool> collectBeforeBank = std::nullopt)
-        : policy_(std::move(policy)), difficulty_(difficulty), collectBeforeBank_(collectBeforeBank) {}
+        std::optional<bool> collectBeforeBank = std::nullopt,
+        ResearchFeatures features = {});
 
     TurnStartDecision decideTurnStart(GameManager& game) override;
     std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;
@@ -95,17 +115,22 @@ public:
 
     [[nodiscard]] const Policy& policy() const { return policy_; }
     [[nodiscard]] std::optional<ComputerDifficulty> difficulty() const { return difficulty_; }
+    [[nodiscard]] const ResearchFeatures& researchFeatures() const { return features_; }
 
 private:
     [[nodiscard]] double optionUtility(const GameManager& game, const ScoringOption& option) const;
     [[nodiscard]] double rollUtility(const GameManager& game) const;
     [[nodiscard]] double bankThreshold(const GameManager& game) const;
     [[nodiscard]] std::optional<PostSelectionDecision> endgameDecision(const GameManager& game) const;
+    [[nodiscard]] bool researchFeaturesEnabled(const GameManager& game) const;
+    [[nodiscard]] bool canSecureWinByCollecting(const GameManager& game) const;
 
     Policy policy_;
     std::optional<ComputerDifficulty> difficulty_;
     std::optional<bool> collectBeforeBank_;
+    ResearchFeatures features_;
     bool pendingBank_{false};
+    bool pendingSafeFinish_{false};
 };
 
 struct MatchResult {

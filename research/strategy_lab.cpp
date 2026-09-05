@@ -1,4 +1,5 @@
 #include "computer.h"
+#include "selection_checkpoint.h"
 
 #include <algorithm>
 #include <atomic>
@@ -32,10 +33,19 @@ struct Config {
     std::optional<zilch::ComputerDifficulty> difficultyB{zilch::ComputerDifficulty::Hard};
     bool collectA{false};
     bool collectB{false};
+    zilch::ResearchFeatures featuresA;
+    zilch::ResearchFeatures featuresB;
     std::uint32_t atRisk{2800};
     std::uint32_t bankedA{0};
     std::uint32_t bankedB{0};
     std::uint16_t dice{6};
+    std::vector<std::uint16_t> roll;
+    std::vector<std::uint16_t> selectLeft;
+    std::vector<std::uint16_t> selectRight;
+    zilch::MatchEntry actionLeft{zilch::MatchEntry::RollCurrentTurn};
+    zilch::MatchEntry actionRight{zilch::MatchEntry::RollCurrentTurn};
+    std::array<std::uint32_t, 6> savedMultiples{};
+    bool activeFinalChase{};
     std::optional<std::string> output;
 };
 
@@ -65,6 +75,46 @@ bool boolean(const std::string& text)
     throw std::invalid_argument("Expected true/false or on/off, got: " + text);
 }
 
+std::vector<std::uint32_t> numberList(const std::string& text)
+{
+    std::vector<std::uint32_t> result;
+    std::size_t start{};
+    for (;;) {
+        const auto end = text.find(',', start);
+        result.push_back(score(text.substr(start, end == std::string::npos ? end : end - start)));
+        if (end == std::string::npos)
+            return result;
+        start = end + 1;
+    }
+}
+
+std::vector<std::uint16_t> diceList(const std::string& text)
+{
+    const auto numbers = numberList(text);
+    if (numbers.empty() || numbers.size() > 6 ||
+        std::any_of(numbers.begin(), numbers.end(), [](const auto value) { return value < 1 || value > 6; }))
+        throw std::invalid_argument("Dice lists require one through six comma-separated faces, each one through six.");
+    return {numbers.begin(), numbers.end()};
+}
+
+zilch::MatchEntry branchAction(const std::string& text)
+{
+    if (text == "roll")
+        return zilch::MatchEntry::RollCurrentTurn;
+    if (text == "bank")
+        return zilch::MatchEntry::BankCurrentTurn;
+    throw std::invalid_argument("Branch actions must be roll or bank.");
+}
+
+double chainWeight(const std::string& text)
+{
+    std::size_t consumed{};
+    const auto value = std::stod(text, &consumed);
+    if (consumed != text.size() || !std::isfinite(value) || value < 0 || value > 8)
+        throw std::invalid_argument("Chain-risk weight must be a finite number between 0 and 8.");
+    return value;
+}
+
 std::optional<zilch::ComputerDifficulty> difficulty(const std::string& text)
 {
     if (text == "raw")
@@ -79,23 +129,36 @@ Config parse(const int argc, const char* const* argv)
 {
     Config config;
     bool countSpecified = false;
+    bool selectionSpecified = false;
+    bool diceSpecified = false;
+    bool atRiskSpecified = false;
     for (int index = 1; index < argc; ++index) {
         const std::string flag = argv[index];
         if (flag == "--help") {
             std::cout
-                << "zilch_research --mode duel|state [options]\n"
+                << "zilch_research --mode duel|state|selection [options]\n"
                 << "  --pairs N             Independent mirrored pairs or state treatment pairs\n"
                 << "  --games N             Alias for an even total of N games (N/2 pairs)\n"
                 << "  --seed N --threads N  Reproducible seed and worker count (0 = hardware)\n"
                 << "  --policy-a FILE --policy-b FILE\n"
                 << "  --difficulty-a hard|medium|easy|raw --difficulty-b hard|medium|easy|raw\n"
                 << "  --collect-a true|false --collect-b true|false\n"
+                << "  --chain-risk-a N --chain-risk-b N  Research chain-risk weights (default 0)\n"
+                << "  --chain-mode-a raise|blend --chain-mode-b raise|blend (default raise)\n"
+                << "  --safe-finish-a true|false --safe-finish-b true|false (default false)\n"
                 << "  --target N --opening-score N --sets on|off --stealing on|off\n"
                 << "  --final-chase on|off --first-roll-mercy on|off --ties on|off\n"
-                << "  --at-risk N --banked-a N --banked-b N --dice N  State mode only\n"
+                << "  --at-risk N --banked-a N --banked-b N  State/selection modes\n"
+                << "  --dice N              State mode only\n"
+                << "  --roll 6,6,6,5,2,3   Selection mode: fixed roll, before selecting dice\n"
+                << "  --select-left 6,6,6 --select-right 6,6,6,5\n"
+                << "  --action-left roll|bank --action-right roll|bank\n"
+                << "  --saved-multiples 0,0,0,0,0,0 --active-final-chase true|false\n"
                 << "  --output FILE         Save the same JSON also printed to stdout\n"
                 << "State mode compares bank now against roll once, then resume A versus B.\n"
                 << "A is seat 0 with an already-scored turn, no saved multiples, no Final Chase.\n"
+                << "Selection mode pairs two legal selections/actions from the same fixed roll.\n"
+                << "Its at-risk value is BEFORE either selection; A acts and B is its opponent.\n"
                 << "Custom policies retain the selected difficulty's endgame layer; raw disables it.\n";
             std::exit(0);
         }
@@ -131,7 +194,20 @@ Config parse(const int argc, const char* const* argv)
             config.collectA = boolean(value);
         else if (flag == "--collect-b")
             config.collectB = boolean(value);
-        else if (flag == "--target")
+        else if (flag == "--chain-risk-a")
+            config.featuresA.chainRiskWeight = chainWeight(value);
+        else if (flag == "--chain-risk-b")
+            config.featuresB.chainRiskWeight = chainWeight(value);
+        else if (flag == "--safe-finish-a")
+            config.featuresA.safeFinishCollection = boolean(value);
+        else if (flag == "--safe-finish-b")
+            config.featuresB.safeFinishCollection = boolean(value);
+        else if (flag == "--chain-mode-a" || flag == "--chain-mode-b") {
+            if (value != "raise" && value != "blend")
+                throw std::invalid_argument("Chain mode must be raise or blend.");
+            auto& features = flag == "--chain-mode-a" ? config.featuresA : config.featuresB;
+            features.lowerChainThresholds = value == "blend";
+        } else if (flag == "--target")
             config.target = score(value);
         else if (flag == "--opening-score")
             config.rules.setOpeningScoreLimit(score(value));
@@ -145,24 +221,55 @@ Config parse(const int argc, const char* const* argv)
             config.rules.setFirstRollBustBonusEnabled(boolean(value));
         else if (flag == "--ties")
             config.rules.setAllowTies(boolean(value));
-        else if (flag == "--at-risk")
+        else if (flag == "--at-risk") {
+            atRiskSpecified = true;
             config.atRisk = score(value);
-        else if (flag == "--banked-a")
+        } else if (flag == "--banked-a")
             config.bankedA = score(value);
         else if (flag == "--banked-b")
             config.bankedB = score(value);
         else if (flag == "--dice") {
+            diceSpecified = true;
             const auto count = number(value);
             if (count < 1 || count > 6)
                 throw std::invalid_argument("Dice count must be 1 through 6.");
             config.dice = static_cast<std::uint16_t>(count);
         } else if (flag == "--output")
             config.output = value;
-        else
+        else if (flag == "--roll" || flag == "--select-left" || flag == "--select-right") {
+            selectionSpecified = true;
+            if (flag == "--roll")
+                config.roll = diceList(value);
+            else if (flag == "--select-left")
+                config.selectLeft = diceList(value);
+            else
+                config.selectRight = diceList(value);
+        } else if (flag == "--action-left" || flag == "--action-right") {
+            selectionSpecified = true;
+            if (flag == "--action-left")
+                config.actionLeft = branchAction(value);
+            else
+                config.actionRight = branchAction(value);
+        } else if (flag == "--saved-multiples") {
+            selectionSpecified = true;
+            const auto scores = numberList(value);
+            if (scores.size() != 6)
+                throw std::invalid_argument("Saved multiples require exactly six scores, ordered by die face.");
+            std::copy(scores.begin(), scores.end(), config.savedMultiples.begin());
+        } else if (flag == "--active-final-chase") {
+            selectionSpecified = true;
+            config.activeFinalChase = boolean(value);
+        } else
             throw std::invalid_argument("Unknown option: " + flag);
     }
-    if (config.mode != "duel" && config.mode != "state")
-        throw std::invalid_argument("Mode must be duel or state.");
+    if (config.mode != "duel" && config.mode != "state" && config.mode != "selection")
+        throw std::invalid_argument("Mode must be duel, state, or selection.");
+    if (selectionSpecified && config.mode != "selection")
+        throw std::invalid_argument("Fixed roll/selection options require selection mode.");
+    if (diceSpecified && config.mode == "selection")
+        throw std::invalid_argument("Selection mode derives its dice count from --roll, not --dice.");
+    if (config.mode == "selection" && !atRiskSpecified)
+        config.atRisk = 0;
     if (config.target < 1000 || config.rules.openingScoreLimit() > config.target)
         throw std::invalid_argument("Target must be at least 1000 and not below the opening score.");
     if (config.mode == "state" && (config.bankedA >= config.target || config.bankedB >= config.target))
@@ -200,12 +307,17 @@ zilch::Policy load(const std::optional<std::string>& path,
 
 void printPolicy(std::ostream& output, const zilch::Policy& policy,
                  const std::optional<std::string>& path,
-                 const std::optional<zilch::ComputerDifficulty> level, const bool collect)
+                 const std::optional<zilch::ComputerDifficulty> level, const bool collect,
+                 const zilch::ResearchFeatures& features)
 {
     output << "{\"name\":" << quote(policy.name)
            << ",\"source\":" << quote(path.value_or("builtin"))
            << ",\"difficulty\":" << quote(level ? std::string(zilch::computerDifficultyName(*level)) : "raw")
            << ",\"collect_before_bank\":" << (collect ? "true" : "false")
+           << ",\"chain_risk_weight\":" << features.chainRiskWeight
+           << ",\"chain_mode\":" << quote(features.lowerChainThresholds ? "blend" : "raise")
+           << ",\"lower_chain_thresholds\":" << (features.lowerChainThresholds ? "true" : "false")
+           << ",\"safe_finish_collection\":" << (features.safeFinishCollection ? "true" : "false")
            << ",\"bank_thresholds\":[";
     for (std::size_t index = 1; index <= 6; ++index)
         output << (index == 1 ? "" : ",") << policy.bankThresholdByDice[index];
@@ -315,6 +427,10 @@ std::mt19937 engine(const std::uint64_t seed)
 
 zilch::GameManager makeState(const Config& config)
 {
+    if (config.mode == "selection") {
+        return zilch::research::makeSelectionCheckpoint({config.rules, config.target, config.atRisk,
+            config.bankedA, config.bankedB, config.roll, config.savedMultiples, config.activeFinalChase});
+    }
     zilch::GameManager game;
     game.setPlayers({"A", "B"});
     game.setScoreLimit(config.target);
@@ -336,11 +452,116 @@ zilch::GameManager makeState(const Config& config)
     return game;
 }
 
+template <typename Values>
+void printValues(std::ostream& output, const Values& values)
+{
+    output << '[';
+    bool first = true;
+    for (const auto value : values) {
+        output << (first ? "" : ",") << value;
+        first = false;
+    }
+    output << ']';
+}
+
+void printCheckpointState(std::ostream& output, const zilch::GameManager& game)
+{
+    output << "{\"banked_a\":" << game.players()[0].score().permanentScore()
+           << ",\"banked_b\":" << game.players()[1].score().permanentScore()
+           << ",\"at_risk\":" << game.currentPlayer().score().roundScore()
+           << ",\"next_dice\":" << game.currentPlayer().dice().numDiceInPlay()
+           << ",\"seat\":" << game.currentIndex()
+           << ",\"selected_option\":" << (game.selectedOption() ? "true" : "false")
+           << ",\"turn_active\":" << (game.turnActive() ? "true" : "false")
+           << ",\"can_bank\":" << (game.canBankCurrentScore() ? "true" : "false")
+           << ",\"final_chase_active\":" << (game.finalRoundActive() ? "true" : "false")
+           << ",\"last_turn_of_match\":" << (game.wouldEndAfterCurrentTurn() ? "true" : "false")
+           << ",\"final_chase_leader_seat\":";
+    if (game.finalRoundActive())
+        output << game.finalRoundLeaderIndex();
+    else
+        output << "null";
+    output << ",\"remaining_rolled_counts\":[";
+    const auto& dice = game.currentPlayer().dice().diceSetMap();
+    for (std::uint16_t face = 1; face <= 6; ++face) {
+        const auto found = dice.find(face);
+        output << (face == 1 ? "" : ",") << (found == dice.end() ? 0 : found->second);
+    }
+    output << "],\"saved_multiple_scores\":[";
+    for (std::uint16_t face = 1; face <= 6; ++face)
+        output << (face == 1 ? "" : ",") << game.savedMultipleScore(face);
+    output << "],\"roll_count_this_turn\":" << game.rollCountThisTurn()
+           << ",\"mercy_available_next_roll\":false}";
+}
+
+void printSelectionBranch(std::ostream& output, const zilch::research::SelectionBranch& branch,
+                          const std::vector<std::uint16_t>& selected, const std::uint32_t beforeScore)
+{
+    output << "{\"selected_dice\":";
+    printValues(output, selected);
+    output << ",\"action\":" << quote(branch.action == zilch::MatchEntry::BankCurrentTurn ? "bank" : "roll")
+           << ",\"score_gain\":" << branch.game.currentPlayer().score().roundScore() - beforeScore
+           << ",\"applied_options\":[";
+    for (std::size_t index = 0; index < branch.options.size(); ++index) {
+        const auto& option = branch.options[index];
+        const auto type = option.type == zilch::OptionType::Multiple ? "multiple" :
+            option.type == zilch::OptionType::Single ? "single" :
+            option.type == zilch::OptionType::Straight ? "straight" : "three_pairs";
+        output << (index == 0 ? "" : ",") << "{\"type\":" << quote(type)
+               << ",\"face\":" << option.dieValue << ",\"dice_used\":" << option.diceUsed
+               << ",\"score_gain\":" << option.scoreGain << ",\"next_dice\":" << option.nextDiceCount
+               << ",\"extends_multiple\":" << (option.extendsMultiple ? "true" : "false")
+               << ",\"hot_dice\":" << (option.resetsToFullSet ? "true" : "false")
+               << ",\"label\":" << quote(option.label) << '}';
+    }
+    output << "],\"state\":";
+    printCheckpointState(output, branch.game);
+    output << '}';
+}
+
+void printIncumbentSelection(std::ostream& output, const zilch::GameManager& initial,
+                             const zilch::Policy& policy, const Config& config)
+{
+    auto game = initial;
+    zilch::ComputerController controller(policy, config.difficultyA, config.collectA, config.featuresA);
+    zilch::Checker checker(game);
+    std::vector<zilch::ScoringOption> choices;
+    auto action = zilch::MatchEntry::RollCurrentTurn;
+    for (auto options = checker.availableOptions(); !options.empty(); options = checker.availableOptions()) {
+        const auto index = controller.chooseOption(game, options);
+        if (index >= options.size())
+            throw std::logic_error("Incumbent controller chose an invalid option.");
+        choices.push_back(options[index]);
+        checker.applyOption(options[index]);
+        const auto remaining = checker.availableOptions();
+        const auto decision = controller.decideAfterSelection(game, remaining);
+        if (decision == zilch::PostSelectionDecision::SelectAgain && !remaining.empty())
+            continue;
+        action = decision == zilch::PostSelectionDecision::Bank && game.canBankCurrentScore()
+            ? zilch::MatchEntry::BankCurrentTurn : zilch::MatchEntry::RollCurrentTurn;
+        break;
+    }
+    std::vector<std::uint16_t> selected;
+    for (const auto& [face, originalCount] : initial.currentPlayer().dice().diceSetMap()) {
+        const auto& remaining = game.currentPlayer().dice().diceSetMap();
+        const auto found = remaining.find(face);
+        const auto count = originalCount - (found == remaining.end() ? 0 : found->second);
+        selected.insert(selected.end(), static_cast<std::size_t>(count), face);
+    }
+    printSelectionBranch(output, {game, choices, action}, selected, config.atRisk);
+}
+
 std::string run(const Config& config)
 {
     const auto policyA = load(config.policyA, config.difficultyA, config.rules.stealingEnabled());
     const auto policyB = load(config.policyB, config.difficultyB, config.rules.stealingEnabled());
     const auto initial = makeState(config);
+    const auto left = config.mode == "selection"
+        ? std::make_optional(zilch::research::makeSelectionBranch(initial, config.selectLeft, config.actionLeft))
+        : std::nullopt;
+    const auto right = config.mode == "selection"
+        ? std::make_optional(zilch::research::makeSelectionBranch(initial, config.selectRight, config.actionRight))
+        : std::nullopt;
     std::mt19937_64 seedGenerator(config.seed);
     std::vector<std::uint64_t> seeds(config.pairs);
     for (auto& seed : seeds)
@@ -355,10 +576,10 @@ std::string run(const Config& config)
                 const auto pair = nextPair.fetch_add(1);
                 if (pair >= config.pairs)
                     break;
-                zilch::ComputerController firstA(policyA, config.difficultyA, config.collectA);
-                zilch::ComputerController firstB(policyB, config.difficultyB, config.collectB);
-                zilch::ComputerController secondA(policyA, config.difficultyA, config.collectA);
-                zilch::ComputerController secondB(policyB, config.difficultyB, config.collectB);
+                zilch::ComputerController firstA(policyA, config.difficultyA, config.collectA, config.featuresA);
+                zilch::ComputerController firstB(policyB, config.difficultyB, config.collectB, config.featuresB);
+                zilch::ComputerController secondA(policyA, config.difficultyA, config.collectA, config.featuresA);
+                zilch::ComputerController secondB(policyB, config.difficultyB, config.collectB, config.featuresB);
                 auto firstRng = engine(seeds[pair]);
                 auto secondRng = engine(seeds[pair]);
                 if (config.mode == "duel") {
@@ -371,7 +592,7 @@ std::string run(const Config& config)
                     aggregate.primary.add((firstPoints + secondPoints) / 2.0);
                     aggregate.margin.add((static_cast<long double>(first.finalScores[0]) - first.finalScores[1]
                                           + second.finalScores[1] - second.finalScores[0]) / 2.0L);
-                } else {
+                } else if (config.mode == "state") {
                     const auto bank = zilch::playMatchFromState(initial, {&firstA, &firstB}, firstRng,
                                                               zilch::MatchEntry::BankCurrentTurn);
                     const auto roll = zilch::playMatchFromState(initial, {&secondA, &secondB}, secondRng,
@@ -381,6 +602,14 @@ std::string run(const Config& config)
                     aggregate.primary.add(rollPoints - bankPoints);
                     aggregate.margin.add(static_cast<long double>(roll.finalScores[0]) - roll.finalScores[1]
                                          - bank.finalScores[0] + bank.finalScores[1]);
+                } else {
+                    const auto first = zilch::playMatchFromState(left->game, {&firstA, &firstB}, firstRng, left->action);
+                    const auto second = zilch::playMatchFromState(right->game, {&secondA, &secondB}, secondRng, right->action);
+                    const auto leftPoints = aggregate.a.add(first, 0);
+                    const auto rightPoints = aggregate.b.add(second, 0);
+                    aggregate.primary.add(rightPoints - leftPoints);
+                    aggregate.margin.add(static_cast<long double>(second.finalScores[0]) - second.finalScores[1]
+                                         - first.finalScores[0] + first.finalScores[1]);
                 }
             }
         });
@@ -397,7 +626,7 @@ std::string run(const Config& config)
 
     std::ostringstream output;
     output << std::setprecision(17)
-           << "{\"schema_version\":1,\"mode\":" << quote(config.mode)
+           << "{\"schema_version\":" << (config.mode == "selection" ? 2 : 1) << ",\"mode\":" << quote(config.mode)
            << ",\"seed\":" << config.seed << ",\"pairs\":" << config.pairs
            << ",\"total_games\":" << config.pairs * 2 << ",\"threads\":" << config.threads
            << ",\"rng\":\"mt19937_64 master; each draw seeds mt19937 via seed_seq(low32,high32); same stream within each pair\""
@@ -411,9 +640,9 @@ std::string run(const Config& config)
            << ",\"final_chase\":" << (config.rules.finalChaseEnabled() ? "true" : "false")
            << ",\"ties\":" << (config.rules.tiesAllowed() ? "true" : "false") << '}'
            << ",\"policy_a\":";
-    printPolicy(output, policyA, config.policyA, config.difficultyA, config.collectA);
+    printPolicy(output, policyA, config.policyA, config.difficultyA, config.collectA, config.featuresA);
     output << ",\"policy_b\":";
-    printPolicy(output, policyB, config.policyB, config.difficultyB, config.collectB);
+    printPolicy(output, policyB, config.policyB, config.difficultyB, config.collectB, config.featuresB);
     if (config.mode == "duel") {
         output << ",\"a\":";
         total.a.print(output);
@@ -423,7 +652,7 @@ std::string run(const Config& config)
         total.primary.print(output);
         output << ",\"a_score_margin_paired\":";
         total.margin.print(output);
-    } else {
+    } else if (config.mode == "state") {
         output << ",\"state\":{\"banked_a\":" << config.bankedA << ",\"banked_b\":" << config.bankedB
                << ",\"at_risk\":" << config.atRisk << ",\"next_dice\":" << config.dice
                << ",\"seat\":0,\"final_chase_active\":false,\"prior_scoring_roll\":true,\"saved_multiples\":{},\"mercy_available_next_roll\":false}"
@@ -435,13 +664,44 @@ std::string run(const Config& config)
         total.primary.print(output);
         output << ",\"roll_minus_bank_score_margin_paired\":";
         total.margin.print(output);
+    } else {
+        output << ",\"selection_state\":{\"roll\":";
+        printValues(output, config.roll);
+        output << ",\"at_risk_before_selection\":" << config.atRisk
+               << ",\"state\":";
+        printCheckpointState(output, initial);
+        output << "},\"branches\":{\"left\":";
+        printSelectionBranch(output, *left, config.selectLeft, config.atRisk);
+        output << ",\"right\":";
+        printSelectionBranch(output, *right, config.selectRight, config.atRisk);
+        output << "},\"incumbent_recommendation\":";
+        printIncumbentSelection(output, initial, policyA, config);
+        output << ",\"left\":";
+        total.a.print(output);
+        output << ",\"right\":";
+        total.b.print(output);
+        output << ",\"right_minus_left_match_points_paired\":";
+        total.primary.print(output);
+        output << ",\"right_minus_left_score_margin_paired\":";
+        total.margin.print(output);
     }
     output << "}\n";
     return output.str();
 }
 
+void saveResult(const std::filesystem::path& path, const std::string& result)
+{
+    if (!path.parent_path().empty())
+        std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::out | std::ios::noreplace);
+    output << result;
+    if (!output)
+        throw std::runtime_error("Unable to save research output without overwriting: " + path.string());
+}
+
 } // namespace
 
+#ifndef ZILCH_RESEARCH_TESTING
 int main(const int argc, const char* const* argv)
 {
     try {
@@ -449,15 +709,8 @@ int main(const int argc, const char* const* argv)
         if (config.output && std::filesystem::exists(*config.output))
             throw std::invalid_argument("Refusing to overwrite existing research evidence: " + *config.output);
         const auto result = run(config);
-        if (config.output) {
-            const auto path = std::filesystem::path(*config.output);
-            if (!path.parent_path().empty())
-                std::filesystem::create_directories(path.parent_path());
-            std::ofstream output(path, std::ios::out | std::ios::noreplace);
-            output << result;
-            if (!output)
-                throw std::runtime_error("Unable to save research output: " + *config.output);
-        }
+        if (config.output)
+            saveResult(*config.output, result);
         std::cout << result;
         return 0;
     } catch (const std::exception& error) {
@@ -465,3 +718,4 @@ int main(const int argc, const char* const* argv)
         return 1;
     }
 }
+#endif

@@ -157,6 +157,88 @@ std::size_t highestScoringOptionIndex(const std::vector<ScoringOption>& options)
     return static_cast<std::size_t>(std::distance(options.begin(), best));
 }
 
+struct GuaranteedCollection {
+    std::uint32_t scoreGain{0};
+    std::size_t firstOption{0};
+};
+
+GuaranteedCollection maximumGuaranteedCollection(const GameManager& source)
+{
+    auto game = source;
+    const auto options = Checker(game).availableOptions();
+    GuaranteedCollection best;
+    for (std::size_t index = 0; index < options.size(); ++index) {
+        auto branch = source;
+        Checker(branch).applyOption(options[index]);
+        const auto gain = options[index].scoreGain + maximumGuaranteedCollection(branch).scoreGain;
+        if (gain > best.scoreGain)
+            best = {gain, index};
+    }
+    return best;
+}
+
+struct ChainEnumerationKey {
+    std::uint16_t diceCount{0};
+    std::array<std::uint32_t, 6> savedScores{};
+    std::array<bool, 4> scoringRules{};
+    auto operator<=>(const ChainEnumerationKey&) const = default;
+};
+
+struct ChainEnumeration {
+    std::uint32_t outcomes{0};
+    std::uint32_t busts{0};
+    std::uint64_t totalNewScore{0};
+};
+
+std::optional<ChainEnumeration> enumerateChain(const GameManager& source)
+{
+    const auto diceCount = source.currentPlayer().dice().numDiceInPlay();
+    if (diceCount < 1 || diceCount > 3 || !source.ruleConfig().multiplesEnabled())
+        return std::nullopt;
+    ChainEnumerationKey key;
+    key.diceCount = diceCount;
+    bool hasChain = false;
+    for (std::uint16_t face = 1; face <= 6; ++face) {
+        key.savedScores[face - 1] = source.savedMultipleScore(face);
+        hasChain = hasChain || key.savedScores[face - 1] > 0;
+    }
+    if (!hasChain)
+        return std::nullopt;
+    const auto& rules = source.ruleConfig();
+    key.scoringRules = {rules.straightEnabled(), rules.threePairsEnabled(),
+                        rules.multiplesEnabled(), rules.singlesEnabled()};
+
+    // Per-thread immutable-value cache avoids locking the simulation hot path.
+    // Current roll, totals, mercy and endgame do not change Checker scoring;
+    // the unclaimed current-roll score is subtracted separately by the caller.
+    thread_local std::map<ChainEnumerationKey, ChainEnumeration> cache;
+    if (const auto found = cache.find(key); found != cache.end())
+        return found->second;
+
+    ChainEnumeration result;
+    result.outcomes = 1;
+    for (std::uint16_t die = 0; die < diceCount; ++die)
+        result.outcomes *= 6;
+    for (std::uint32_t outcome = 0; outcome < result.outcomes; ++outcome) {
+        auto game = source;
+        game.currentPlayer().score().setRoundScore(0);
+        auto& counts = game.currentPlayer().dice().diceSetMap();
+        counts.clear();
+        auto encoded = outcome;
+        for (std::uint16_t die = 0; die < diceCount; ++die) {
+            ++counts[static_cast<std::uint16_t>(encoded % 6 + 1)];
+            encoded /= 6;
+        }
+        if (!Checker(game).hasAvailableOption()) {
+            ++result.busts;
+        } else {
+            result.totalNewScore += maximumGuaranteedCollection(game).scoreGain;
+        }
+    }
+    cache.emplace(key, result);
+    return result;
+}
+
 void printOptions(std::ostream& output, const std::vector<ScoringOption>& options)
 {
     output << "Options:\n";
@@ -767,9 +849,66 @@ PostSelectionDecision HumanController::decideAfterSelection(
     }
 }
 
+std::optional<ChainRiskEstimate> researchChainRiskEstimate(const GameManager& game)
+{
+    const auto enumeration = enumerateChain(game);
+    if (!enumeration || enumeration->busts == 0)
+        return std::nullopt;
+    const auto guaranteed = maximumGuaranteedCollection(game).scoreGain;
+    // Bank-all earns B + G; roll-once-and-bank earns (1-p)B + E.
+    // Their crossover is (E-G)/p, not E/p when safe points remain.
+    const auto adjustedScore = static_cast<double>(enumeration->totalNewScore) -
+                               static_cast<double>(guaranteed) * enumeration->outcomes;
+    return ChainRiskEstimate{enumeration->outcomes, enumeration->busts,
+                             enumeration->totalNewScore, guaranteed,
+                             adjustedScore / enumeration->busts};
+}
+
+ComputerController::ComputerController(
+    Policy policy,
+    const std::optional<ComputerDifficulty> difficulty,
+    const std::optional<bool> collectBeforeBank,
+    const ResearchFeatures features)
+    : policy_(std::move(policy)), difficulty_(difficulty), collectBeforeBank_(collectBeforeBank), features_(features)
+{
+    if (!std::isfinite(features_.chainRiskWeight) || features_.chainRiskWeight < 0)
+        throw std::invalid_argument("Research chain risk weight must be finite and nonnegative.");
+}
+
+bool ComputerController::researchFeaturesEnabled(const GameManager& game) const
+{
+    return difficulty_ == ComputerDifficulty::Hard && !game.ruleConfig().stealingEnabled();
+}
+
+bool ComputerController::canSecureWinByCollecting(const GameManager& game) const
+{
+    if (!features_.safeFinishCollection || !researchFeaturesEnabled(game))
+        return false;
+    const bool finalTurn = game.finalRoundActive() && game.wouldEndAfterCurrentTurn();
+    const bool immediateWin = !game.ruleConfig().finalChaseEnabled() || game.playerCount() == 1;
+    if (!finalTurn && !immediateWin)
+        return false;
+    auto collected = game;
+    for (;;) {
+        const auto best = maximumGuaranteedCollection(collected);
+        if (best.scoreGain == 0)
+            break;
+        const auto options = Checker(collected).availableOptions();
+        Checker(collected).applyOption(options[best.firstOption]);
+    }
+    if (!collected.canBankCurrentScore())
+        return false;
+    const auto& score = collected.currentPlayer().score();
+    const auto total = static_cast<std::uint64_t>(score.permanentScore()) + score.roundScore();
+    if (finalTurn)
+        return total > maxOpponentScore(collected, collected.currentIndex());
+    return total >= collected.scoreLimit();
+}
+
 TurnStartDecision ComputerController::decideTurnStart(GameManager& game)
 {
     pendingBank_ = false;
+    pendingSafeFinish_ = false;
     if (difficulty_ == ComputerDifficulty::Easy) {
         return game.stealOfferScore() >= 600 ? TurnStartDecision::AcceptSteal :
                                                TurnStartDecision::FreshRoll;
@@ -816,6 +955,16 @@ double ComputerController::bankThreshold(const GameManager& game) const
 {
     const auto nextDiceCount = game.currentPlayer().dice().numDiceInPlay();
     auto threshold = static_cast<double>(policy_.bankThresholdByDice[nextDiceCount]);
+
+    if (features_.chainRiskWeight > 0 && researchFeaturesEnabled(game)) {
+        if (const auto estimate = researchChainRiskEstimate(game)) {
+            const auto delta = estimate->breakEvenTurnScore - threshold;
+            // Research ablations either raise only or blend both directions.
+            // Keep the released score-position adjustments and clamp below.
+            threshold += features_.chainRiskWeight *
+                         (features_.lowerChainThresholds ? delta : std::max(0.0, delta));
+        }
+    }
 
     const auto playerScore = game.currentPlayer().score().permanentScore();
     const auto lead = static_cast<int>(playerScore) -
@@ -886,8 +1035,16 @@ std::optional<PostSelectionDecision> ComputerController::endgameDecision(const G
 
 std::size_t ComputerController::chooseOption(GameManager& game, const std::vector<ScoringOption>& options)
 {
-    if (!game.selectedOption())
+    if (!game.selectedOption()) {
         pendingBank_ = false;
+        pendingSafeFinish_ = false;
+    }
+    if (!pendingBank_ && canSecureWinByCollecting(game)) {
+        pendingBank_ = true;
+        pendingSafeFinish_ = true;
+    }
+    if (pendingBank_ && pendingSafeFinish_)
+        return maximumGuaranteedCollection(game).firstOption;
     if (pendingBank_)
         return highestScoringOptionIndex(options);
 
@@ -909,12 +1066,17 @@ PostSelectionDecision ComputerController::decideAfterSelection(
     GameManager& game,
     const std::vector<ScoringOption>& remainingOptions)
 {
-    if (!game.canBankCurrentScore())
+    if (!game.canBankCurrentScore() && !pendingSafeFinish_)
         pendingBank_ = false;
+    if (!pendingBank_ && canSecureWinByCollecting(game)) {
+        pendingBank_ = true;
+        pendingSafeFinish_ = true;
+    }
     if (pendingBank_) {
         if (!remainingOptions.empty())
             return PostSelectionDecision::SelectAgain;
         pendingBank_ = false;
+        pendingSafeFinish_ = false;
         return PostSelectionDecision::Bank;
     }
 
