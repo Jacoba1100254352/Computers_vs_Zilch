@@ -83,8 +83,9 @@ class ComputerController final : public Controller {
 public:
     explicit ComputerController(
         Policy policy,
-        std::optional<ComputerDifficulty> difficulty = std::nullopt)
-        : policy_(std::move(policy)), difficulty_(difficulty) {}
+        std::optional<ComputerDifficulty> difficulty = std::nullopt,
+        bool collectBeforeBank = false)
+        : policy_(std::move(policy)), difficulty_(difficulty), collectBeforeBank_(collectBeforeBank) {}
 
     TurnStartDecision decideTurnStart(GameManager& game) override;
     std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;
@@ -98,11 +99,13 @@ public:
 private:
     [[nodiscard]] double optionUtility(const GameManager& game, const ScoringOption& option) const;
     [[nodiscard]] double rollUtility(const GameManager& game) const;
-    [[nodiscard]] int bankThreshold(const GameManager& game) const;
+    [[nodiscard]] double bankThreshold(const GameManager& game) const;
     [[nodiscard]] std::optional<PostSelectionDecision> endgameDecision(const GameManager& game) const;
 
     Policy policy_;
     std::optional<ComputerDifficulty> difficulty_;
+    bool collectBeforeBank_{false};
+    bool pendingBank_{false};
 };
 
 struct MatchResult {
@@ -110,6 +113,22 @@ struct MatchResult {
     std::uint32_t winningScore{0};
     std::vector<std::uint32_t> finalScores;
 };
+
+// Research entry points reuse the same turn and final-round loop as normal play.
+// Current-turn entries require an active post-selection state; they must not call
+// startTurn(), which would discard the points and hot dice under investigation.
+enum class MatchEntry {
+    StartTurn,
+    RollCurrentTurn,
+    BankCurrentTurn,
+};
+
+[[nodiscard]] MatchResult playMatchFromState(
+    GameManager game,
+    const std::vector<Controller*>& controllers,
+    std::mt19937& rng,
+    MatchEntry entry = MatchEntry::StartTurn,
+    std::ostream* output = nullptr);
 
 struct PlayConfig {
     std::string humanName{"You"};

@@ -802,6 +802,173 @@ void testNamedDifficultyStealChoices()
            "Hard should accept at the Stealing-trained one-die cutoff");
 }
 
+void testOptionalCollectorBanksAllGuaranteedPoints()
+{
+    const auto policy = zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard);
+    auto game = makeGame();
+    game.currentPlayer().score().setRoundScore(2700);
+    game.registerRoll();
+    setDice(game, {1, 1, 5, 2, 3, 4});
+    zilch::Checker checker(game);
+    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard);
+    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
+
+    auto options = checker.availableOptions();
+    expect(incumbent.chooseOption(game, options) == collector.chooseOption(game, options),
+           "optional collection must not change the initial rolling selection");
+    checker.applyOption(options[collector.chooseOption(game, options)]);
+    expect(game.currentPlayer().score().roundScore() == 2800, "the first one should bring the turn to 2800");
+    options = checker.availableOptions();
+    expect(incumbent.decideAfterSelection(game, options) == zilch::PostSelectionDecision::Bank,
+           "the default-off incumbent should preserve its historical bank decision");
+    expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
+           "the candidate should collect guaranteed points before banking");
+
+    checker.applyOption(options[collector.chooseOption(game, options)]);
+    options = checker.availableOptions();
+    expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
+           "a pending bank should continue collecting the remaining five");
+    checker.applyOption(options[collector.chooseOption(game, options)]);
+    expect(checker.availableOptions().empty(), "all scoring dice should now be collected");
+    expect(collector.decideAfterSelection(game, {}) == zilch::PostSelectionDecision::Bank,
+           "a completed collection should bank without another roll");
+    expect(game.currentPlayer().score().roundScore() == 2950, "collection should retain the extra 150 points");
+    game.bankCurrentScore();
+    expect(game.currentPlayer().score().permanentScore() == 2950, "the extra points should actually be banked");
+}
+
+void testOptionalCollectorPreservesRollsAndResetsItsPlan()
+{
+    const auto policy = zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard);
+    auto game = makeGame();
+    game.registerRoll();
+    setDice(game, {1, 1, 5, 2, 3, 4});
+    zilch::Checker checker(game);
+    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard);
+    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
+    auto options = checker.availableOptions();
+    checker.applyOption(options[collector.chooseOption(game, options)]);
+    options = checker.availableOptions();
+    expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::Roll &&
+               incumbent.decideAfterSelection(game, options) == zilch::PostSelectionDecision::Roll,
+           "the optional collector must leave below-threshold rolling decisions unchanged");
+
+    game.currentPlayer().score().setRoundScore(2800);
+    expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
+           "the high score should create a pending bank plan");
+    game.startTurn(0);
+    game.registerRoll();
+    setDice(game, {1, 1, 5, 2, 3, 4});
+    options = checker.availableOptions();
+    checker.applyOption(options[collector.chooseOption(game, options)]);
+    expect(collector.decideAfterSelection(game, checker.availableOptions()) == zilch::PostSelectionDecision::Roll,
+           "starting a new turn must discard an unfinished bank plan");
+
+    game.currentPlayer().score().setRoundScore(2800);
+    expect(collector.decideAfterSelection(game, checker.availableOptions()) ==
+               zilch::PostSelectionDecision::SelectAgain,
+           "another high score should recreate the pending plan");
+    collector.decideTurnStart(game);
+    game.currentPlayer().score().setRoundScore(100);
+    expect(collector.decideAfterSelection(game, checker.availableOptions()) == zilch::PostSelectionDecision::Roll,
+           "an explicit turn-start decision must also discard the pending bank plan");
+}
+
+void testOptionalCollectorCommitsThroughHotDice()
+{
+    auto game = makeGame();
+    game.ruleConfig().setOpeningScoreLimit(0);
+    game.currentPlayer().score().setRoundScore(600);
+    game.registerRoll();
+    game.setSelectedOption(true);
+    setDice(game, {1, 5, 2, 2, 2});
+    auto policy = zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard);
+    policy.bankThresholdByDice = {0, 600, 600, 600, 600, 600, 4000};
+    policy.scoreWeight = 1;
+    policy.remainingDiceWeight = 200;
+    policy.hotDiceWeight = -50;
+    policy.multipleWeight = -50;
+    policy.rollBias = 200;
+    policy.leadFactor = 0;
+    policy.trailFactor = 0;
+    policy.closingFactor = 0;
+    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
+    zilch::Checker checker(game);
+    auto options = checker.availableOptions();
+    expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
+           "the candidate should latch a bank before collecting more dice");
+    const auto firstChoice = options[collector.chooseOption(game, options)];
+    expect(firstChoice.type == zilch::OptionType::Multiple && firstChoice.scoreGain == 200,
+           "a pending bank should choose guaranteed score rather than rolling utility");
+    checker.applyOption(firstChoice);
+
+    for (int selection = 0; selection < 2; ++selection) {
+        options = checker.availableOptions();
+        expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
+               "the committed bank should collect both remaining singles");
+        checker.applyOption(options[collector.chooseOption(game, options)]);
+    }
+    expect(game.currentPlayer().dice().numDiceInPlay() == 6, "collecting everything should produce hot dice");
+    expect(game.currentPlayer().score().roundScore() == 950, "the committed collection should score 950");
+    expect(collector.decideAfterSelection(game, {}) == zilch::PostSelectionDecision::Bank,
+           "hot dice must not reverse an already committed bank into a new roll");
+    expect(collector.decideAfterSelection(game, {}) == zilch::PostSelectionDecision::Roll,
+           "returning Bank must clear the collection plan before the controller is reused");
+}
+
+void testOptionalCollectorKeepsAnImmediateWinningBank()
+{
+    auto game = makeGame();
+    game.ruleConfig().setFinalChaseEnabled(false);
+    game.players()[0].score().addPermanentScore(4900);
+    game.players()[1].score().addPermanentScore(4700);
+    game.registerRoll();
+    setDice(game, {1, 1, 5, 2, 3, 4});
+    zilch::Checker checker(game);
+    zilch::ComputerController collector(
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard), zilch::ComputerDifficulty::Hard, true);
+    auto options = checker.availableOptions();
+    checker.applyOption(options[collector.chooseOption(game, options)]);
+    for (int selection = 0; selection < 2; ++selection) {
+        options = checker.availableOptions();
+        expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
+               "an immediate winning bank may collect extra dice without risking another roll");
+        checker.applyOption(options[collector.chooseOption(game, options)]);
+    }
+    expect(collector.decideAfterSelection(game, {}) == zilch::PostSelectionDecision::Bank,
+           "the candidate must retain its immediate winning bank after collection");
+    game.bankCurrentScore();
+    expect(game.currentPlayer().score().permanentScore() == 5150,
+           "the immediate winning bank should include all guaranteed points");
+}
+
+void testHardThresholdMatchesWebPrecision()
+{
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Hard, 0, 1100, 1450, 3) ==
+               zilch::PostSelectionDecision::Roll,
+           "the 1450.5134 threshold must not be truncated into a bank at 1450");
+    expect(namedDifficultyDecision(zilch::ComputerDifficulty::Hard, 0, 1100, 1500, 3) ==
+               zilch::PostSelectionDecision::Bank,
+           "the next reachable score must still bank above the precise threshold");
+}
+
+void testHighBankThresholdPersistence()
+{
+    const auto path = std::filesystem::temp_directory_path() / "zilch_high_threshold_policy.cfg";
+    auto policy = zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard);
+    policy.bankThresholdByDice[6] = 16575;
+    expect(zilch::savePolicy(path.string(), policy), "the high six-dice cutoff should save");
+    zilch::Policy loaded;
+    expect(zilch::loadPolicy(path.string(), loaded), "the high six-dice cutoff should load");
+    expect(loaded.bankThresholdByDice[6] == 16575,
+           "research must retain a six-dice cutoff above the historical 3000-point search cap");
+    policy.bankThresholdByDice[6] = 100001;
+    expect(zilch::savePolicy(path.string(), policy), "the oversized cutoff fixture should save");
+    expect(zilch::loadPolicy(path.string(), loaded), "the oversized cutoff fixture should load and clamp");
+    expect(loaded.bankThresholdByDice[6] == 100000, "the expanded cutoff must retain its 100000-point safety cap");
+    std::filesystem::remove(path);
+}
+
 void testTrainerAndArenaValidation()
 {
     zilch::TrainingConfig config;
@@ -895,6 +1062,12 @@ int main()
         testEasyScoresEverythingAndRecognizesAWin();
         testMediumAndHardEndgameAwareness();
         testNamedDifficultyStealChoices();
+        testOptionalCollectorBanksAllGuaranteedPoints();
+        testOptionalCollectorPreservesRollsAndResetsItsPlan();
+        testOptionalCollectorCommitsThroughHotDice();
+        testOptionalCollectorKeepsAnImmediateWinningBank();
+        testHardThresholdMatchesWebPrecision();
+        testHighBankThresholdPersistence();
         testTrainerAndArenaValidation();
     } catch (const std::exception& exception) {
         std::cerr << "Test failed: " << exception.what() << '\n';

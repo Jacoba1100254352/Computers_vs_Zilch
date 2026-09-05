@@ -88,7 +88,9 @@ Policy hardStealingPolicy()
 void clampPolicy(Policy& policy)
 {
     for (std::size_t index = 1; index < policy.bankThresholdByDice.size(); ++index) {
-        policy.bankThresholdByDice[index] = std::clamp(policy.bankThresholdByDice[index], 200, 3000);
+        // Six-dice continuation can remain valuable well beyond 3,000 points.
+        // Preserve high research candidates rather than silently replacing them.
+        policy.bankThresholdByDice[index] = std::clamp(policy.bankThresholdByDice[index], 200, 100000);
         if (index > 1) {
             policy.bankThresholdByDice[index] =
                 std::max(policy.bankThresholdByDice[index], policy.bankThresholdByDice[index - 1]);
@@ -226,9 +228,15 @@ void recordMatch(
     }
 }
 
-void playTurn(GameManager& game, Controller& controller, std::mt19937& rng, std::ostream* output)
+void playTurn(
+    GameManager& game,
+    Controller& controller,
+    std::mt19937& rng,
+    std::ostream* output,
+    const bool resumeCurrentTurn = false)
 {
-    game.startTurn(game.currentIndex());
+    if (!resumeCurrentTurn)
+        game.startTurn(game.currentIndex());
     auto& player = game.currentPlayer();
 
     if (output) {
@@ -236,7 +244,7 @@ void playTurn(GameManager& game, Controller& controller, std::mt19937& rng, std:
         *output << "Scoreboard: " << formatScoreboard(game) << "\n";
     }
 
-    if (game.hasStealOfferForCurrentPlayer()) {
+    if (!resumeCurrentTurn && game.hasStealOfferForCurrentPlayer()) {
         const auto carriedScore = game.stealOfferScore();
         const auto carriedDice = game.stealOfferDiceCount();
 
@@ -355,8 +363,37 @@ MatchResult playMatchInternal(
         rng.seed(static_cast<std::mt19937::result_type>(seed));
     }
 
+    return playMatchFromState(std::move(game), controllers, rng, MatchEntry::StartTurn, output);
+}
+
+} // namespace
+
+MatchResult playMatchFromState(
+    GameManager game,
+    const std::vector<Controller*>& controllers,
+    std::mt19937& rng,
+    MatchEntry entry,
+    std::ostream* output)
+{
+    validateMatchConfiguration(game.scoreLimit(), game.ruleConfig());
+    if (game.playerCount() == 0 || controllers.size() != game.playerCount() ||
+        std::any_of(controllers.begin(), controllers.end(), [](const auto* controller) {
+            return controller == nullptr;
+        })) {
+        throw std::invalid_argument("Each match player must have a controller.");
+    }
+    if (entry != MatchEntry::StartTurn && !game.turnActive())
+        throw std::invalid_argument("A resumed match requires an active turn.");
+    if (entry == MatchEntry::BankCurrentTurn && !game.canBankCurrentScore())
+        throw std::invalid_argument("Cannot force bank from an unbankable state.");
+
     while (true) {
-        playTurn(game, *controllers[game.currentIndex()], rng, output);
+        if (entry == MatchEntry::BankCurrentTurn)
+            game.bankCurrentScore();
+        else
+            playTurn(game, *controllers[game.currentIndex()], rng, output,
+                     entry == MatchEntry::RollCurrentTurn);
+        entry = MatchEntry::StartTurn;
 
         if (!game.finalRoundActive() && game.currentPlayer().score().permanentScore() >= game.scoreLimit()) {
             if (game.ruleConfig().finalChaseEnabled() && game.playerCount() > 1) {
@@ -421,8 +458,6 @@ MatchResult playMatchInternal(
 
     return result;
 }
-
-} // namespace
 
 std::string formatPlayerTurn(const std::string_view playerName)
 {
@@ -734,6 +769,7 @@ PostSelectionDecision HumanController::decideAfterSelection(
 
 TurnStartDecision ComputerController::decideTurnStart(GameManager& game)
 {
+    pendingBank_ = false;
     if (difficulty_ == ComputerDifficulty::Easy) {
         return game.stealOfferScore() >= 600 ? TurnStartDecision::AcceptSteal :
                                                TurnStartDecision::FreshRoll;
@@ -776,26 +812,26 @@ double ComputerController::rollUtility(const GameManager& game) const
            policy_.remainingDiceWeight * static_cast<double>(game.currentPlayer().dice().numDiceInPlay());
 }
 
-int ComputerController::bankThreshold(const GameManager& game) const
+double ComputerController::bankThreshold(const GameManager& game) const
 {
     const auto nextDiceCount = game.currentPlayer().dice().numDiceInPlay();
-    auto threshold = policy_.bankThresholdByDice[nextDiceCount];
+    auto threshold = static_cast<double>(policy_.bankThresholdByDice[nextDiceCount]);
 
     const auto playerScore = game.currentPlayer().score().permanentScore();
     const auto lead = static_cast<int>(playerScore) -
                       static_cast<int>(maxOpponentScore(game, game.currentIndex()));
 
     if (lead > 0)
-        threshold -= static_cast<int>(static_cast<double>(lead) * policy_.leadFactor);
+        threshold -= static_cast<double>(lead) * policy_.leadFactor;
     else
-        threshold += static_cast<int>(static_cast<double>(-lead) * policy_.trailFactor);
+        threshold += static_cast<double>(-lead) * policy_.trailFactor;
 
     const auto distanceToWin = static_cast<int>(game.scoreLimit()) -
                                static_cast<int>(playerScore + game.currentPlayer().score().roundScore());
     const auto closingWindow = std::max(0, 1500 - std::max(distanceToWin, 0));
-    threshold -= static_cast<int>(static_cast<double>(closingWindow) * policy_.closingFactor);
+    threshold -= static_cast<double>(closingWindow) * policy_.closingFactor;
 
-    return std::clamp(threshold, 200, static_cast<int>(game.scoreLimit()));
+    return std::clamp(threshold, 200.0, static_cast<double>(game.scoreLimit()));
 }
 
 std::optional<PostSelectionDecision> ComputerController::endgameDecision(const GameManager& game) const
@@ -850,6 +886,11 @@ std::optional<PostSelectionDecision> ComputerController::endgameDecision(const G
 
 std::size_t ComputerController::chooseOption(GameManager& game, const std::vector<ScoringOption>& options)
 {
+    if (!game.selectedOption())
+        pendingBank_ = false;
+    if (pendingBank_)
+        return highestScoringOptionIndex(options);
+
     std::size_t bestIndex = 0;
     auto bestUtility = optionUtility(game, options.front());
 
@@ -868,6 +909,25 @@ PostSelectionDecision ComputerController::decideAfterSelection(
     GameManager& game,
     const std::vector<ScoringOption>& remainingOptions)
 {
+    if (!game.canBankCurrentScore())
+        pendingBank_ = false;
+    if (pendingBank_) {
+        if (!remainingOptions.empty())
+            return PostSelectionDecision::SelectAgain;
+        pendingBank_ = false;
+        return PostSelectionDecision::Bank;
+    }
+
+    // Once banking is chosen, collect safe points without reconsidering the
+    // decision to end the turn when the extra selections change the dice count.
+    const auto bankOrCollect = [&]() {
+        if (collectBeforeBank_ && !remainingOptions.empty()) {
+            pendingBank_ = true;
+            return PostSelectionDecision::SelectAgain;
+        }
+        return PostSelectionDecision::Bank;
+    };
+
     if (!remainingOptions.empty()) {
         if (difficulty_ == ComputerDifficulty::Easy || difficulty_ == ComputerDifficulty::Medium)
             return PostSelectionDecision::SelectAgain;
@@ -882,12 +942,12 @@ PostSelectionDecision ComputerController::decideAfterSelection(
 
     if (game.canBankCurrentScore()) {
         if (const auto decision = endgameDecision(game); decision)
-            return *decision;
+            return *decision == PostSelectionDecision::Bank ? bankOrCollect() : *decision;
     }
 
     if (game.canBankCurrentScore() &&
         static_cast<int>(game.currentPlayer().score().roundScore()) >= bankThreshold(game)) {
-        return PostSelectionDecision::Bank;
+        return bankOrCollect();
     }
 
     return PostSelectionDecision::Roll;

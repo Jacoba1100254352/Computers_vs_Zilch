@@ -20,10 +20,16 @@ add_executable(zilch
 target_include_directories(zilch PRIVATE ${PROJECT_SOURCE_DIR})
 target_link_libraries(zilch PRIVATE Threads::Threads)
 
+add_executable(zilch_research research/strategy_lab.cpp ${ZILCH_CORE_SOURCES})
+target_include_directories(zilch_research PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(zilch_research PRIVATE Threads::Threads)
+
 if(MSVC)
     target_compile_options(zilch PRIVATE /W4 /permissive-)
+    target_compile_options(zilch_research PRIVATE /W4 /permissive-)
 else()
     target_compile_options(zilch PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(zilch_research PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(BUILD_TESTING)
@@ -42,6 +48,16 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME zilch_tests COMMAND zilch_tests)
+    add_executable(zilch_research_tests research/regression_tests.cpp ${ZILCH_CORE_SOURCES})
+    target_include_directories(zilch_research_tests PRIVATE ${PROJECT_SOURCE_DIR})
+    target_link_libraries(zilch_research_tests PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(zilch_research_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(zilch_research_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME zilch_research_tests COMMAND zilch_research_tests)
+    add_test(NAME zilch_research_smoke COMMAND zilch_research --mode state --pairs 5 --threads 2 --seed 2026090501)
     add_test(
         NAME zilch_cli_regression
         COMMAND /bin/sh
