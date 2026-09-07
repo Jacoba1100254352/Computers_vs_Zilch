@@ -62,6 +62,9 @@ struct ResearchFeatures {
     // Joint planning always prioritizes a guaranteed outright win, even when
     // the independent safe-finish-only ablation above is disabled.
     bool jointSelection{false};
+    // Separate scope ablation: use joint selection only on rolls with a saved
+    // chain or a currently available Multiple option, not unrelated singles.
+    bool jointChainsOnly{false};
 };
 
 struct ChainRiskEstimate {
@@ -127,6 +130,8 @@ private:
     [[nodiscard]] std::optional<PostSelectionDecision> endgameDecision(const GameManager& game) const;
     [[nodiscard]] bool researchFeaturesEnabled(const GameManager& game) const;
     [[nodiscard]] bool canSecureWinByCollecting(const GameManager& game) const;
+    [[nodiscard]] bool useJointSelection(const GameManager& game) const;
+    void resetStaleJointSelection(const GameManager& game);
     void prepareJointSelection(const GameManager& game, bool requireSelection);
 
     Policy policy_;
@@ -137,6 +142,8 @@ private:
     bool pendingSafeFinish_{false};
     std::vector<std::size_t> pendingJointSelections_;
     std::optional<PostSelectionDecision> pendingJointDecision_;
+    std::uint32_t pendingJointRollCount_{0};
+    std::size_t pendingJointPlayer_{0};
 };
 
 struct MatchResult {

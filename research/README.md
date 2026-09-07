@@ -61,8 +61,12 @@ raw match results. The paired fields are
 `right_minus_left_score_margin_paired`; positive values favor the right branch.
 They include sums, sums of squares, standard errors, and 95% intervals. The fixed
 roll is registered as already happened, so the next roll cannot receive the
-first-roll-only mercy bonus. A synthetic count of one represents that invariant;
-the checkpoint does not invent an exact transcript of preceding scoring rolls.
+first-roll-only mercy bonus. The representative count is one with zero points at
+risk before selection and two with positive prior points. This distinguishes a
+first roll from a later roll without inventing the exact number of preceding
+scoring rolls. `roll_count_semantics` explicitly records that limitation. The
+older synthetic count of one for both cases gave identical forced next-roll
+outcomes, but inaccurately described a positive-risk fixed roll as the first.
 
 ## Exact-state experiment
 
@@ -108,18 +112,33 @@ executable intentionally retains its old false defaults for reproducibility.
 Research-only policy controls are `--chain-risk-a N` / `--chain-risk-b N` (weights
 from 0 through 8, default 0), `--chain-mode-a raise|blend` /
 `--chain-mode-b raise|blend` (default raise), `--safe-finish-a true|false` /
-`--safe-finish-b true|false` (default false), and
-`--joint-selection-a true|false` / `--joint-selection-b true|false` (default false).
+`--safe-finish-b true|false` (default false),
+`--joint-selection-a true|false` / `--joint-selection-b true|false` (default false),
+and `--joint-chains-only-a true|false` / `--joint-chains-only-b true|false`
+(default false). A true chains-only flag requires the corresponding joint
+selection flag to be true. Its scope includes a saved multiple or a currently
+available Multiple scoring option, not unrelated singleton-only rolls. Once a
+joint plan begins, it remains committed through all selections, including the
+last selection that returns hot dice. Outside this scope the same controller
+uses its ordinary behavior and any independently requested research features.
 They are passed independently to the
 actual controllers and recorded in policy metadata. Their implementation applies
 only to named Hard with Stealing off. Defaults do not change the old state or
 duel treatment behavior; additional metadata states that these features are off.
 Joint selection also protects a guaranteed outright finish, even if the separate
-safe-finish-only ablation is false. Every policy records `joint_selection`, the
-requested `safe_finish_collection`, and their logical OR as
-`effective_safe_finish_collection`; the same named-Hard/non-Stealing restriction
-applies to that effective flag. This distinction lets a joint-planning candidate
-be compared honestly with the safe-finish-only control.
+safe-finish-only ablation is false. Every policy retains the requested
+`joint_selection`, `joint_chains_only`, and `safe_finish_collection` flags.
+`effective_joint_selection` and `effective_safe_finish_collection` state whether
+each behavior is enabled anywhere under the actual difficulty and rules.
+`joint_selection_scope` and `safe_finish_collection_scope` make its reach explicit:
+`disabled`, `all_rolls`, or `chain_rolls`. For example, chains-only joint planning
+without the independent safe-finish toggle protects an outright finish only
+inside its chain scope; turning on the independent guard protects every roll.
+Effective flags are false for non-Hard or Stealing games. Chains-only planning is
+also disabled if multiples are disabled, while full joint planning and an
+independent safe-finish guard do not require multiples. This requested/effective
+distinction keeps scoped joint candidates comparable with the safe-finish-only
+control without implying protections they do not have.
 
 Rule options include `--target`, `--opening-score`, `--sets`, `--stealing`,
 `--final-chase`, `--first-roll-mercy`, and `--ties`. Boolean values accept `true`
@@ -151,6 +170,9 @@ produce exactly balanced results.
 It also covers exact legal fixed selections, all triple faces, larger multiples,
 saved-chain extensions, hot-dice reset, rejection of unbankable Bank and invalid
 states, and immediate match resolution during active Final Chase.
+It distinguishes current-roll mercy eligibility at representative counts one
+and two, and checks complete Bank/Roll outcome, RNG, and transcript parity after
+the count correction under incumbent, full-joint, and chain-scoped controllers.
 `zilch_selection_cli_tests` verifies parsing/metadata, identical-branch zero
 effects, bit-identical results across worker counts, use of both halves of the
 64-bit pair seed, and exclusive no-overwrite evidence writes.

@@ -924,6 +924,8 @@ ComputerController::ComputerController(
 {
     if (!std::isfinite(features_.chainRiskWeight) || features_.chainRiskWeight < 0)
         throw std::invalid_argument("Research chain risk weight must be finite and nonnegative.");
+    if (features_.jointChainsOnly && !features_.jointSelection)
+        throw std::invalid_argument("Chains-only joint scope requires joint selection to be enabled.");
 }
 
 bool ComputerController::researchFeaturesEnabled(const GameManager& game) const
@@ -1089,6 +1091,36 @@ std::optional<PostSelectionDecision> ComputerController::endgameDecision(const G
     return std::nullopt;
 }
 
+bool ComputerController::useJointSelection(const GameManager& game) const
+{
+    if (!features_.jointSelection || !researchFeaturesEnabled(game))
+        return false;
+    // A path remains joint through every scoring step, including the moment
+    // hot dice clear its saved chain. Re-evaluate scope only for the next roll.
+    if (pendingJointDecision_ || !features_.jointChainsOnly)
+        return true;
+    if (!game.ruleConfig().multiplesEnabled())
+        return false;
+    for (std::uint16_t face = 1; face <= 6; ++face) {
+        if (game.hasSavedMultiple(face))
+            return true;
+    }
+    auto selectable = game;
+    const auto options = Checker(selectable).availableOptions();
+    return std::any_of(options.begin(), options.end(), [](const ScoringOption& option) {
+        return option.type == OptionType::Multiple;
+    });
+}
+
+void ComputerController::resetStaleJointSelection(const GameManager& game)
+{
+    if (pendingJointDecision_ && (!game.selectedOption() ||
+        game.rollCountThisTurn() != pendingJointRollCount_ || game.currentIndex() != pendingJointPlayer_)) {
+        pendingJointSelections_.clear();
+        pendingJointDecision_.reset();
+    }
+}
+
 void ComputerController::prepareJointSelection(const GameManager& game, const bool requireSelection)
 {
     struct Plan {
@@ -1151,15 +1183,14 @@ void ComputerController::prepareJointSelection(const GameManager& game, const bo
         throw std::logic_error("Joint research planning requires a legal scoring selection or post-selection action.");
     pendingJointSelections_ = std::move(best.selections);
     pendingJointDecision_ = best.decision;
+    pendingJointRollCount_ = game.rollCountThisTurn();
+    pendingJointPlayer_ = game.currentIndex();
 }
 
 std::size_t ComputerController::chooseOption(GameManager& game, const std::vector<ScoringOption>& options)
 {
-    if (features_.jointSelection && researchFeaturesEnabled(game)) {
-        if (!game.selectedOption()) {
-            pendingJointSelections_.clear();
-            pendingJointDecision_.reset();
-        }
+    resetStaleJointSelection(game);
+    if (useJointSelection(game)) {
         if (!pendingJointDecision_)
             prepareJointSelection(game, true);
         if (pendingJointSelections_.empty())
@@ -1199,7 +1230,8 @@ PostSelectionDecision ComputerController::decideAfterSelection(
     GameManager& game,
     const std::vector<ScoringOption>& remainingOptions)
 {
-    if (features_.jointSelection && researchFeaturesEnabled(game)) {
+    resetStaleJointSelection(game);
+    if (useJointSelection(game)) {
         if (!pendingJointDecision_)
             prepareJointSelection(game, false);
         if (!pendingJointSelections_.empty())

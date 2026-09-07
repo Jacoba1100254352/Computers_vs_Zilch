@@ -277,6 +277,86 @@ void extensionsAndFinalChase()
                   "A checkpoint over the target must not silently omit active Final Chase.");
 }
 
+void checkpointRollCountAndMercy()
+{
+    auto checkpoint = selectionCheckpoint();
+    // This fixed non-scoring roll permits a direct check of current-roll mercy
+    // eligibility. Forced-selection experiments still require scoring dice.
+    checkpoint.roll = {2, 2, 3, 3, 4, 6};
+    auto first = zilch::research::makeSelectionCheckpoint(checkpoint);
+    checkpoint.atRisk = 600;
+    auto later = zilch::research::makeSelectionCheckpoint(checkpoint);
+    expect(first.rollCountThisTurn() == 1 && later.rollCountThisTurn() == 2,
+           "Checkpoint counts must distinguish zero prior risk from an already-scored turn.");
+    expect(!zilch::Checker(first).hasAvailableOption() && !zilch::Checker(later).hasAvailableOption(),
+           "Mercy fixture must be an actual non-scoring roll under the default rules.");
+    zilch::Checker(first).handleBust();
+    zilch::Checker(later).handleBust();
+    expect(first.turnActive() && first.bustBonusUsedThisTurn() &&
+           first.currentPlayer().score().roundScore() == 50,
+           "The representative first roll must remain eligible for first-roll mercy.");
+    expect(!later.turnActive() && !later.bustBonusUsedThisTurn() &&
+           later.currentPlayer().score().roundScore() == 0,
+           "A fixed roll after prior scoring must not be mislabeled as mercy-eligible.");
+
+    checkpoint = selectionCheckpoint();
+    auto selected = zilch::research::makeSelectionBranch(
+        zilch::research::makeSelectionCheckpoint(checkpoint), {6, 6, 6}, zilch::MatchEntry::RollCurrentTurn).game;
+    auto selectedLater = selected;
+    selectedLater.registerRoll();
+    selected.registerRoll();
+    selectedLater.registerRoll();
+    // After either starting count, a subsequent bust is beyond the first roll.
+    zilch::Checker(selected).handleBust();
+    zilch::Checker(selectedLater).handleBust();
+    expect(!selected.turnActive() && !selectedLater.turnActive() &&
+           !selected.bustBonusUsedThisTurn() && !selectedLater.bustBonusUsedThisTurn() &&
+           selected.currentPlayer().score().roundScore() == 0 &&
+           selectedLater.currentPlayer().score().roundScore() == 0,
+           "A next-roll bust must never receive mercy from either representative starting count.");
+}
+
+void checkpointCountCorrectionPreservesOutcomes()
+{
+    auto checkpoint = selectionCheckpoint();
+    checkpoint.bankedA = 1000;
+    checkpoint.bankedB = 1000;
+    // Reconstruct the former synthetic count of one at the same positive risk.
+    auto legacy = zilch::research::makeSelectionCheckpoint(checkpoint);
+    legacy.currentPlayer().score().setRoundScore(600);
+    checkpoint.atRisk = 600;
+    const auto corrected = zilch::research::makeSelectionCheckpoint(checkpoint);
+    expect(legacy.rollCountThisTurn() == 1 && corrected.rollCountThisTurn() == 2,
+           "Outcome parity fixture must differ in the corrected representative count.");
+    const auto policy = zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard);
+    const zilch::ResearchFeatures modes[] = {{}, {0.0, false, false, true, false},
+                                             {0.0, false, false, true, true}};
+    for (const auto& features : modes) {
+        for (const auto action : {zilch::MatchEntry::RollCurrentTurn, zilch::MatchEntry::BankCurrentTurn}) {
+            const auto oldBranch = zilch::research::makeSelectionBranch(legacy, {6, 6, 6, 5}, action);
+            const auto newBranch = zilch::research::makeSelectionBranch(corrected, {6, 6, 6, 5}, action);
+            for (std::uint32_t seed = 1; seed <= 32; ++seed) {
+                zilch::ComputerController oldA(policy, zilch::ComputerDifficulty::Hard, true, features);
+                zilch::ComputerController oldB(policy, zilch::ComputerDifficulty::Hard, true, features);
+                zilch::ComputerController newA(policy, zilch::ComputerDifficulty::Hard, true, features);
+                zilch::ComputerController newB(policy, zilch::ComputerDifficulty::Hard, true, features);
+                std::mt19937 oldRng(seed);
+                std::mt19937 newRng(seed);
+                std::ostringstream oldTranscript;
+                std::ostringstream newTranscript;
+                const auto oldResult = zilch::playMatchFromState(oldBranch.game, {&oldA, &oldB}, oldRng,
+                                                                action, &oldTranscript);
+                const auto newResult = zilch::playMatchFromState(newBranch.game, {&newA, &newB}, newRng,
+                                                                action, &newTranscript);
+                expect(oldResult.finalScores == newResult.finalScores &&
+                       oldResult.winnerIndex == newResult.winnerIndex && oldRng == newRng &&
+                       oldTranscript.str() == newTranscript.str(),
+                       "Correcting the count must preserve full outcomes, dice consumption, and transcripts for Bank/Roll under old and joint policies.");
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main()
@@ -291,6 +371,8 @@ int main()
         selectionUsesRealScoringAndCopiesState();
         multipleFacesAndCounts();
         extensionsAndFinalChase();
+        checkpointRollCountAndMercy();
+        checkpointCountCorrectionPreservesOutcomes();
         std::cout << "All resumed-state, selection checkpoint, and mirrored-identity tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

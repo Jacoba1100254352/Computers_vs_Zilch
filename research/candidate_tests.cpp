@@ -1,6 +1,8 @@
 #include "computer.h"
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -212,26 +214,53 @@ void featureValidation()
         }
         expect(rejected, "Invalid research weights must not silently enter a candidate.");
     }
+    bool rejected = false;
+    try {
+        ComputerController controller({}, ComputerDifficulty::Hard, std::nullopt, {0, false, false, false, true});
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    expect(rejected, "Chains-only scope must not silently enable a disabled joint planner.");
+    const ComputerController released(zilch::policyForDifficulty(ComputerDifficulty::Hard), ComputerDifficulty::Hard);
+    const auto features = released.researchFeatures();
+    expect(features.chainRiskWeight == 0 && !features.safeFinishCollection && !features.lowerChainThresholds &&
+               !features.jointSelection && !features.jointChainsOnly,
+           "Every new research feature must stay off in the ordinary production constructor.");
 }
 
 struct PlannedResult {
     GameManager game;
     PostSelectionDecision decision;
+    std::vector<std::string> selections;
 };
 
 PlannedResult selectRoll(GameManager game, ComputerController& controller)
 {
+    std::vector<std::string> selections;
     for (unsigned int step = 0; step < 6; ++step) {
         const auto options = zilch::Checker(game).availableOptions();
         expect(!options.empty(), "A planned SelectAgain must still have a legal option.");
         const auto index = controller.chooseOption(game, options);
         expect(index < options.size(), "Committed joint path must reference the actual current options.");
+        selections.push_back(options[index].label);
         zilch::Checker(game).applyOption(options[index]);
         const auto decision = controller.decideAfterSelection(game, zilch::Checker(game).availableOptions());
         if (decision != PostSelectionDecision::SelectAgain)
-            return {std::move(game), decision};
+            return {std::move(game), decision, std::move(selections)};
     }
     throw std::runtime_error("Joint selection did not finish within six selections.");
+}
+
+void samePlan(const PlannedResult& actual, const PlannedResult& expected, const char* message)
+{
+    const auto& actualPlayer = actual.game.currentPlayer();
+    const auto& expectedPlayer = expected.game.currentPlayer();
+    expect(actual.decision == expected.decision && actual.selections == expected.selections &&
+               actualPlayer.score().roundScore() == expectedPlayer.score().roundScore() &&
+               actualPlayer.dice().numDiceInPlay() == expectedPlayer.dice().numDiceInPlay() &&
+               actualPlayer.dice().diceSetMap() == expectedPlayer.dice().diceSetMap(), message);
+    for (std::uint16_t face = 1; face <= 6; ++face)
+        expect(actual.game.savedMultipleScore(face) == expected.game.savedMultipleScore(face), message);
 }
 
 void jointSelectionAndEndgames()
@@ -318,6 +347,178 @@ void jointSelectionAndEndgames()
            "Joint research must not change the separate Stealing policy.");
 }
 
+void chainsOnlyOrdinaryParity()
+{
+    const auto hard = zilch::policyForDifficulty(ComputerDifficulty::Hard);
+    std::size_t checked = 0;
+    // Exhaust every unordered non-chain roll of one through six dice. Include
+    // scoring combinations that look special but are not chains (sets and
+    // straights), opening turns, leads, deficits, and final-chase decisions.
+    for (const bool safeFinish : {false, true}) {
+        ComputerController ordinary(hard, ComputerDifficulty::Hard, std::nullopt,
+                                    {0.75, safeFinish, true, false, false});
+        ComputerController scoped(hard, ComputerDifficulty::Hard, std::nullopt,
+                                  {0.75, safeFinish, true, true, true});
+        for (const bool sets : {false, true}) {
+            for (const auto position : {0, 1, 2, 3, 4}) {
+                for (const auto risk : {0U, 600U, 1400U, 2500U, 4850U}) {
+                    for (std::uint16_t count = 1; count <= 6; ++count) {
+                        if (count < 6 && risk == 0)
+                            continue;
+                        auto game = finishState(position == 0 ? 0 : position == 4 ? 4900 :
+                                                position == 2 ? 3500 : 1000,
+                                                position == 4 ? 5500 : position == 3 ? 3500 :
+                                                position == 0 ? 0 : 1000,
+                                                position == 4);
+                        game.ruleConfig().setFinalChaseEnabled(true);
+                        game.ruleConfig().setThreePairsEnabled(sets);
+                        game.currentPlayer().score().setRoundScore(risk);
+                        game.manageDiceCount(count);
+                        game.currentPlayer().dice().diceSetMap().clear();
+                        std::function<void(std::uint16_t, std::uint16_t)> enumerate =
+                            [&](const std::uint16_t left, const std::uint16_t minimum) {
+                            if (left == 0) {
+                                const auto options = zilch::Checker(game).availableOptions();
+                                if (options.empty() || std::any_of(options.begin(), options.end(),
+                                    [](const zilch::ScoringOption& option) {
+                                        return option.type == zilch::OptionType::Multiple;
+                                    }))
+                                    return;
+                                samePlan(selectRoll(game, scoped), selectRoll(game, ordinary),
+                                         "Chain-only mode changed a non-chain selection or action.");
+                                ++checked;
+                                return;
+                            }
+                            for (std::uint16_t face = minimum; face <= 6; ++face) {
+                                auto& dice = game.currentPlayer().dice().diceSetMap();
+                                ++dice[face];
+                                enumerate(static_cast<std::uint16_t>(left - 1), face);
+                                if (--dice[face] == 0)
+                                    dice.erase(face);
+                            }
+                        };
+                        enumerate(count, 1);
+                    }
+                }
+            }
+        }
+    }
+    expect(checked > 10000, "Non-chain parity panel unexpectedly lost its exhaustive roll coverage.");
+    std::cout << "Verified " << checked << " non-chain selection/action parity checkpoints.\n";
+}
+
+void chainsOnlySelectionAndLifetime()
+{
+    const auto hard = zilch::policyForDifficulty(ComputerDifficulty::Hard);
+    const ResearchFeatures scopedFeatures{1.0, false, false, true, true};
+    ComputerController scoped(hard, ComputerDifficulty::Hard, std::nullopt, scopedFeatures);
+    ComputerController full(hard, ComputerDifficulty::Hard, std::nullopt, {1.0, false, false, true});
+    ComputerController ordinary(hard, ComputerDifficulty::Hard, std::nullopt, {1.0, false, false});
+    for (std::uint16_t face = 1; face <= 6; ++face) {
+        for (const auto risk : {0U, 600U, 2000U, 3500U}) {
+            auto game = chainState(face, 3, risk);
+            game.clearSavedMultiples();
+            game.manageDiceCount(6);
+            game.currentPlayer().dice().diceSetMap() = {{2, 1}, {3, 1}, {5, 1}};
+            game.currentPlayer().dice().diceSetMap()[face] += 3;
+            game.setSelectedOption(false);
+            samePlan(selectRoll(game, scoped), selectRoll(game, full),
+                     "A currently available multiple must receive unchanged full-joint planning.");
+        }
+        for (std::uint16_t count = 3; count <= 5; ++count) {
+            auto game = chainState(face, count, 5000);
+            for (std::uint16_t index = count; index < 6; ++index)
+                ++game.currentPlayer().dice().diceSetMap()[index == count ? face : index == 4 ? 1 : 5];
+            game.setSelectedOption(false);
+            samePlan(selectRoll(game, scoped), selectRoll(game, full),
+                     "A saved chain or its extension must receive unchanged full-joint planning.");
+        }
+    }
+
+    auto triple = finishState(0, 0, false);
+    triple.ruleConfig().setFinalChaseEnabled(true);
+    const auto preserve = selectRoll(triple, scoped);
+    expect(preserve.decision == PostSelectionDecision::Roll &&
+               preserve.game.currentPlayer().score().roundScore() == 600 &&
+               preserve.game.currentPlayer().dice().numDiceInPlay() == 3,
+           "Chain-only mode must preserve the original triple-six plus five choice.");
+
+    auto extension = chainState(6, 3, 600);
+    extension.currentPlayer().dice().diceSetMap() = {{1, 1}, {5, 1}, {6, 1}};
+    extension.setSelectedOption(false);
+    const auto hot = selectRoll(extension, scoped);
+    expect(hot.decision == PostSelectionDecision::Roll && hot.game.currentPlayer().score().roundScore() == 1350 &&
+               hot.game.currentPlayer().dice().numDiceInPlay() == 6 && !hot.game.hasSavedMultiple(6),
+           "Chain scope must remain latched through the final selection clearing hot-dice chains.");
+    auto nextRoll = hot.game;
+    nextRoll.currentPlayer().dice().diceSetMap() = {{1, 2}, {2, 1}, {3, 1}, {4, 1}, {6, 1}};
+    nextRoll.setSelectedOption(false);
+    nextRoll.registerRoll();
+    samePlan(selectRoll(nextRoll, scoped), selectRoll(nextRoll, ordinary),
+             "A new hot-dice roll without a chain must return to ordinary greedy selection.");
+
+    // Keep an unfinished path, then move to another actual roll. The plan's
+    // remaining option indexes must not survive even if selectedOption is true
+    // because a checkpoint caller already scored something on the new roll.
+    auto interrupted = extension;
+    auto options = zilch::Checker(interrupted).availableOptions();
+    zilch::Checker(interrupted).applyOption(options[scoped.chooseOption(interrupted, options)]);
+    expect(scoped.decideAfterSelection(interrupted, zilch::Checker(interrupted).availableOptions()) ==
+               PostSelectionDecision::SelectAgain, "Lifetime fixture must leave a multi-step joint path pending.");
+    interrupted.currentPlayer().dice().diceSetMap() = {{6, 1}};
+    interrupted.manageDiceCount(1);
+    interrupted.registerRoll();
+    ComputerController fresh(hard, ComputerDifficulty::Hard, std::nullopt, scopedFeatures);
+    samePlan(selectRoll(interrupted, scoped), selectRoll(interrupted, fresh),
+             "A joint path must be recomputed after rollCount changes.");
+
+    // Turn-start resets must work independently of score selection flags.
+    interrupted = extension;
+    options = zilch::Checker(interrupted).availableOptions();
+    zilch::Checker(interrupted).applyOption(options[scoped.chooseOption(interrupted, options)]);
+    scoped.decideTurnStart(nextRoll);
+    samePlan(selectRoll(nextRoll, scoped), selectRoll(nextRoll, ordinary),
+             "Starting a new turn must clear every previous joint scope latch.");
+
+    interrupted = extension;
+    options = zilch::Checker(interrupted).availableOptions();
+    zilch::Checker(interrupted).applyOption(options[scoped.chooseOption(interrupted, options)]);
+    auto nextPlayer = extension;
+    nextPlayer.startTurn(1);
+    nextPlayer.currentPlayer().score().setRoundScore(5000);
+    nextPlayer.manageDiceCount(1);
+    nextPlayer.setSavedMultipleScore(6, 2400);
+    nextPlayer.currentPlayer().dice().diceSetMap() = {{6, 1}};
+    nextPlayer.registerRoll();
+    nextPlayer.setSelectedOption(true);
+    samePlan(selectRoll(nextPlayer, scoped), selectRoll(nextPlayer, fresh),
+             "A player change must discard a prior path even when roll count and selection flag match.");
+
+    auto disabled = triple;
+    disabled.ruleConfig().setMultiplesEnabled(false);
+    samePlan(selectRoll(disabled, scoped), selectRoll(disabled, ordinary),
+             "Disabled multiples must leave ordinary selection unchanged.");
+    auto savedWithoutExtension = chainState(6, 3, 2000);
+    savedWithoutExtension.currentPlayer().dice().diceSetMap() = {{1, 1}, {2, 1}, {5, 1}};
+    savedWithoutExtension.setSelectedOption(false);
+    samePlan(selectRoll(savedWithoutExtension, scoped), selectRoll(savedWithoutExtension, full),
+             "A saved chain alone must activate scope even without a rolled extension.");
+
+    for (const auto difficulty : {ComputerDifficulty::Easy, ComputerDifficulty::Medium}) {
+        ComputerController control(zilch::policyForDifficulty(difficulty), difficulty);
+        ComputerController restricted(zilch::policyForDifficulty(difficulty), difficulty, std::nullopt, scopedFeatures);
+        samePlan(selectRoll(extension, restricted), selectRoll(extension, control),
+                 "Chain-only mode must not affect Easy or Medium.");
+    }
+    auto stealing = extension;
+    stealing.ruleConfig().setStealingEnabled(true);
+    ComputerController controlSteal(zilch::policyForDifficulty(ComputerDifficulty::Hard, true), ComputerDifficulty::Hard);
+    ComputerController scopedSteal(zilch::policyForDifficulty(ComputerDifficulty::Hard, true),
+                                   ComputerDifficulty::Hard, std::nullopt, scopedFeatures);
+    samePlan(selectRoll(stealing, scopedSteal), selectRoll(stealing, controlSteal),
+             "Chain-only mode must not affect Stealing.");
+}
+
 } // namespace
 
 int main()
@@ -328,7 +529,9 @@ int main()
         safeFinishAndLifetime();
         featureValidation();
         jointSelectionAndEndgames();
-        std::cout << "Research candidate scoring, cache, threshold, safe-finish and joint-selection tests passed.\n";
+        chainsOnlyOrdinaryParity();
+        chainsOnlySelectionAndLifetime();
+        std::cout << "Research candidate scoring, cache, threshold, safe-finish and scoped joint-selection tests passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

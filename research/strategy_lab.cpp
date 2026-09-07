@@ -147,6 +147,7 @@ Config parse(const int argc, const char* const* argv)
                 << "  --chain-mode-a raise|blend --chain-mode-b raise|blend (default raise)\n"
                 << "  --safe-finish-a true|false --safe-finish-b true|false (default false)\n"
                 << "  --joint-selection-a true|false --joint-selection-b true|false (default false)\n"
+                << "  --joint-chains-only-a true|false --joint-chains-only-b true|false (requires joint selection)\n"
                 << "  --target N --opening-score N --sets on|off --stealing on|off\n"
                 << "  --final-chase on|off --first-roll-mercy on|off --ties on|off\n"
                 << "  --at-risk N --banked-a N --banked-b N  State/selection modes\n"
@@ -207,6 +208,10 @@ Config parse(const int argc, const char* const* argv)
             config.featuresA.jointSelection = boolean(value);
         else if (flag == "--joint-selection-b")
             config.featuresB.jointSelection = boolean(value);
+        else if (flag == "--joint-chains-only-a")
+            config.featuresA.jointChainsOnly = boolean(value);
+        else if (flag == "--joint-chains-only-b")
+            config.featuresB.jointChainsOnly = boolean(value);
         else if (flag == "--chain-mode-a" || flag == "--chain-mode-b") {
             if (value != "raise" && value != "blend")
                 throw std::invalid_argument("Chain mode must be raise or blend.");
@@ -269,6 +274,10 @@ Config parse(const int argc, const char* const* argv)
     }
     if (config.mode != "duel" && config.mode != "state" && config.mode != "selection")
         throw std::invalid_argument("Mode must be duel, state, or selection.");
+    if (config.featuresA.jointChainsOnly && !config.featuresA.jointSelection)
+        throw std::invalid_argument("--joint-chains-only-a true requires --joint-selection-a true.");
+    if (config.featuresB.jointChainsOnly && !config.featuresB.jointSelection)
+        throw std::invalid_argument("--joint-chains-only-b true requires --joint-selection-b true.");
     if (selectionSpecified && config.mode != "selection")
         throw std::invalid_argument("Fixed roll/selection options require selection mode.");
     if (diceSpecified && config.mode == "selection")
@@ -313,8 +322,16 @@ zilch::Policy load(const std::optional<std::string>& path,
 void printPolicy(std::ostream& output, const zilch::Policy& policy,
                  const std::optional<std::string>& path,
                  const std::optional<zilch::ComputerDifficulty> level, const bool collect,
-                 const zilch::ResearchFeatures& features)
+                 const zilch::ResearchFeatures& features, const zilch::RuleConfig& rules)
 {
+    const bool eligible = level == zilch::ComputerDifficulty::Hard && !rules.stealingEnabled();
+    const bool effectiveJoint = eligible && features.jointSelection &&
+        (!features.jointChainsOnly || rules.multiplesEnabled());
+    const bool effectiveSafe = eligible && (features.safeFinishCollection || effectiveJoint);
+    const std::string jointScope = !effectiveJoint ? "disabled" :
+        features.jointChainsOnly ? "chain_rolls" : "all_rolls";
+    const std::string safeScope = !effectiveSafe ? "disabled" :
+        features.safeFinishCollection ? "all_rolls" : jointScope;
     output << "{\"name\":" << quote(policy.name)
            << ",\"source\":" << quote(path.value_or("builtin"))
            << ",\"difficulty\":" << quote(level ? std::string(zilch::computerDifficultyName(*level)) : "raw")
@@ -324,8 +341,12 @@ void printPolicy(std::ostream& output, const zilch::Policy& policy,
            << ",\"lower_chain_thresholds\":" << (features.lowerChainThresholds ? "true" : "false")
            << ",\"safe_finish_collection\":" << (features.safeFinishCollection ? "true" : "false")
            << ",\"joint_selection\":" << (features.jointSelection ? "true" : "false")
+           << ",\"joint_chains_only\":" << (features.jointChainsOnly ? "true" : "false")
+           << ",\"effective_joint_selection\":" << (effectiveJoint ? "true" : "false")
+           << ",\"joint_selection_scope\":" << quote(jointScope)
            << ",\"effective_safe_finish_collection\":"
-           << (features.safeFinishCollection || features.jointSelection ? "true" : "false")
+           << (effectiveSafe ? "true" : "false")
+           << ",\"safe_finish_collection_scope\":" << quote(safeScope)
            << ",\"bank_thresholds\":[";
     for (std::size_t index = 1; index <= 6; ++index)
         output << (index == 1 ? "" : ",") << policy.bankThresholdByDice[index];
@@ -499,6 +520,7 @@ void printCheckpointState(std::ostream& output, const zilch::GameManager& game)
     for (std::uint16_t face = 1; face <= 6; ++face)
         output << (face == 1 ? "" : ",") << game.savedMultipleScore(face);
     output << "],\"roll_count_this_turn\":" << game.rollCountThisTurn()
+           << ",\"roll_count_semantics\":\"representative_first_or_later_not_exact_history\""
            << ",\"mercy_available_next_roll\":false}";
 }
 
@@ -648,9 +670,9 @@ std::string run(const Config& config)
            << ",\"final_chase\":" << (config.rules.finalChaseEnabled() ? "true" : "false")
            << ",\"ties\":" << (config.rules.tiesAllowed() ? "true" : "false") << '}'
            << ",\"policy_a\":";
-    printPolicy(output, policyA, config.policyA, config.difficultyA, config.collectA, config.featuresA);
+    printPolicy(output, policyA, config.policyA, config.difficultyA, config.collectA, config.featuresA, config.rules);
     output << ",\"policy_b\":";
-    printPolicy(output, policyB, config.policyB, config.difficultyB, config.collectB, config.featuresB);
+    printPolicy(output, policyB, config.policyB, config.difficultyB, config.collectB, config.featuresB, config.rules);
     if (config.mode == "duel") {
         output << ",\"a\":";
         total.a.print(output);

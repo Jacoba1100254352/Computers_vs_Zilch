@@ -85,9 +85,13 @@ inline GameManager makeSelectionCheckpoint(const SelectionCheckpoint& checkpoint
         if (checkpoint.savedMultiples[face - 1] != 0)
             game.setSavedMultipleScore(face, checkpoint.savedMultiples[face - 1]);
     }
-    // The fixed roll has happened. The next roll is necessarily a later roll,
-    // even when the supplied checkpoint is the first scoring roll of the turn.
+    // The fixed roll has happened. Zero prior points can represent the first
+    // roll; positive prior points imply at least one earlier roll. This count
+    // preserves first-versus-later eligibility, not an invented exact history.
+    // Either way, a subsequent roll cannot receive first-roll-only mercy.
     game.registerRoll();
+    if (checkpoint.atRisk > 0)
+        game.registerRoll();
     return game;
 }
 
