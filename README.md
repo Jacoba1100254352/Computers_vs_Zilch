@@ -221,6 +221,14 @@ Boolean values accept `on`/`off`, `true`/`false`, `yes`/`no`, `enabled`/`disable
 
 The named levels are intended for human play. Easy takes every available scoring option and normally banks at 600 points. Medium adds score-aware finish, buffer, and staging choices. Hard combines those choices with the strongest tracked policy for the selected standard or Stealing rules.
 
+Standard Hard also compares scoring selections with their Bank/Roll choices
+when a multiple or saved chain is involved. It considers points at risk,
+the chain's extension value, match position, and hot dice, while protecting an
+available outright win. This frozen, tested feature pack is on by default only
+for named non-Stealing Hard. Explicit raw policies and the research harness's
+explicit feature settings keep their prior behavior; see `STRATEGY.md` and
+`research/README.md` for reproduction and the baseline controls.
+
 `--difficulty` and `--policy` are mutually exclusive. With neither option, `play` preserves its legacy behavior: it loads `trained_policy.cfg` from the project root when present and otherwise uses the built-in baseline. An explicit policy path runs the policy directly without named-level endgame heuristics, which keeps research comparisons reproducible.
 During option selection, enter `all` or `a` to apply the highest-scoring remaining options until no more scoring choices are available. Enter `?` to reprint the current options.
 

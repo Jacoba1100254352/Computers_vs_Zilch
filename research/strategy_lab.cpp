@@ -33,8 +33,10 @@ struct Config {
     std::optional<zilch::ComputerDifficulty> difficultyB{zilch::ComputerDifficulty::Hard};
     bool collectA{false};
     bool collectB{false};
-    zilch::ResearchFeatures featuresA;
-    zilch::ResearchFeatures featuresB;
+    // Always passed explicitly to the controllers. Omitted research flags
+    // retain the v1.2 feature-off baseline, independent of production defaults.
+    zilch::ResearchFeatures featuresA{};
+    zilch::ResearchFeatures featuresB{};
     std::uint32_t atRisk{2800};
     std::uint32_t bankedA{0};
     std::uint32_t bankedB{0};

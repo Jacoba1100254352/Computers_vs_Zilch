@@ -1,10 +1,12 @@
 #include "computer.h"
+#include "selection_checkpoint.h"
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 
 namespace {
@@ -221,11 +223,26 @@ void featureValidation()
         rejected = true;
     }
     expect(rejected, "Chains-only scope must not silently enable a disabled joint planner.");
-    const ComputerController released(zilch::policyForDifficulty(ComputerDifficulty::Hard), ComputerDifficulty::Hard);
-    const auto features = released.researchFeatures();
+    const ComputerController baseline(zilch::policyForDifficulty(ComputerDifficulty::Hard),
+                                      ComputerDifficulty::Hard, std::nullopt, {});
+    const auto features = baseline.researchFeatures();
     expect(features.chainRiskWeight == 0 && !features.safeFinishCollection && !features.lowerChainThresholds &&
                !features.jointSelection && !features.jointChainsOnly,
-           "Every new research feature must stay off in the ordinary production constructor.");
+           "An explicit empty feature pack must retain the old research baseline.");
+    const ComputerController released(zilch::policyForDifficulty(ComputerDifficulty::Hard), ComputerDifficulty::Hard);
+    const auto approved = released.researchFeatures();
+    expect(approved.chainRiskWeight == 1.0 && approved.safeFinishCollection && approved.lowerChainThresholds &&
+               approved.jointSelection && approved.jointChainsOnly,
+           "Named Hard must default to the exact frozen chain-scoped blend-one feature pack.");
+    for (const auto difficulty : {std::optional<ComputerDifficulty>{},
+                                  std::optional{ComputerDifficulty::Easy},
+                                  std::optional{ComputerDifficulty::Medium}}) {
+        const ComputerController unchanged({}, difficulty);
+        const auto inactive = unchanged.researchFeatures();
+        expect(inactive.chainRiskWeight == 0 && !inactive.safeFinishCollection &&
+                   !inactive.lowerChainThresholds && !inactive.jointSelection && !inactive.jointChainsOnly,
+               "Raw, Easy and Medium constructors must not acquire the Hard feature pack.");
+    }
 }
 
 struct PlannedResult {
@@ -519,6 +536,160 @@ void chainsOnlySelectionAndLifetime()
              "Chain-only mode must not affect Stealing.");
 }
 
+void productionDecisionParity()
+{
+    // Independent literal: accidental production-default changes must fail.
+    constexpr ResearchFeatures frozen{1.0, true, true, true, true};
+    const auto policy = zilch::policyForDifficulty(ComputerDifficulty::Hard);
+    ComputerController production(policy, ComputerDifficulty::Hard);
+    ComputerController candidate(policy, ComputerDifficulty::Hard, std::nullopt, frozen);
+    struct Position { std::uint32_t own; std::uint32_t opponent; bool chase; bool ties; bool finalRule; };
+    const Position positions[] = {{0, 0, false, true, true}, {1000, 1000, false, true, true},
+        {3500, 1000, false, true, true}, {1000, 3500, false, true, true},
+        {4500, 4500, false, true, true}, {4900, 5500, true, false, true},
+        {4850, 5500, true, true, true}, {4350, 0, false, true, false}};
+    std::size_t checked = 0;
+    for (const bool sets : {false, true}) {
+        for (const auto& position : positions) {
+            zilch::RuleConfig rules;
+            rules.setThreePairsEnabled(sets);
+            rules.setAllowTies(position.ties);
+            rules.setFinalChaseEnabled(position.finalRule);
+            for (std::uint16_t face = 1; face <= 6; ++face) {
+                for (std::uint16_t count = 3; count <= 5; ++count) {
+                    for (const std::uint16_t single : {1, 5}) {
+                        if (single == face)
+                            continue;
+                        std::vector<std::uint16_t> roll(count, face);
+                        roll.push_back(single);
+                        for (const std::uint16_t filler : {2, 3, 4, 6}) {
+                            if (roll.size() == 6)
+                                break;
+                            if (filler != face)
+                                roll.push_back(filler);
+                        }
+                        for (const auto risk : {0U, 350U, 950U, 1500U, 2800U, 5000U}) {
+                            const auto game = zilch::research::makeSelectionCheckpoint(
+                                {rules, 5000, risk, position.own, position.opponent, roll, {}, position.chase});
+                            samePlan(selectRoll(game, production), selectRoll(game, candidate),
+                                     "Production must match the frozen candidate across risk, match position, and multiple face/size.");
+                            ++checked;
+                        }
+                    }
+                }
+                for (std::uint16_t held = 3; held <= 5; ++held) {
+                    const auto base = face == 1 ? 1000U : static_cast<unsigned int>(face * 100);
+                    const auto savedScore = base << (held - 3);
+                    std::array<std::uint32_t, 6> saved{};
+                    saved[face - 1] = savedScore;
+                    std::vector<std::uint16_t> roll{face};
+                    if (held < 5)
+                        roll.push_back(face == 5 ? 1 : 5);
+                    if (held < 4)
+                        roll.push_back(face == 1 ? 5 : 1);
+                    for (const auto extraRisk : {0U, 350U, 950U, 2800U}) {
+                        const auto game = zilch::research::makeSelectionCheckpoint(
+                            {rules, 5000, savedScore + extraRisk, position.own, position.opponent,
+                             roll, saved, position.chase});
+                        samePlan(selectRoll(game, production), selectRoll(game, candidate),
+                                 "Production must match frozen saved-chain extension and hot-dice choices.");
+                        ++checked;
+                    }
+                }
+            }
+        }
+    }
+    expect(checked == 4032, "Production decision panel lost a declared axis or saved-chain case.");
+    std::cout << "Verified " << checked << " production-versus-frozen-feature selection checkpoints.\n";
+
+    const auto extension = zilch::research::makeSelectionCheckpoint(
+        {{}, 5000, 600, 1000, 1000, {6, 1, 5}, {0, 0, 0, 0, 0, 600}, false});
+    const auto startPending = [&]() {
+        auto pending = extension;
+        const auto options = zilch::Checker(pending).availableOptions();
+        zilch::Checker(pending).applyOption(options[production.chooseOption(pending, options)]);
+        expect(production.decideAfterSelection(pending, zilch::Checker(pending).availableOptions()) ==
+                   PostSelectionDecision::SelectAgain, "Production lifetime fixture needs a pending joint path.");
+    };
+    auto nextRoll = zilch::research::makeSelectionCheckpoint(
+        {{}, 5000, 1350, 1000, 1000, {1, 1, 2, 3, 4, 6}, {}, false});
+    nextRoll.registerRoll();
+    nextRoll.setSelectedOption(true);
+    startPending();
+    samePlan(selectRoll(nextRoll, production), selectRoll(nextRoll, candidate),
+             "Production must discard its pending chain plan when the next roll no longer has a chain.");
+    startPending();
+    production.decideTurnStart(nextRoll);
+    samePlan(selectRoll(nextRoll, production), selectRoll(nextRoll, candidate),
+             "Production turn-start reset must discard an unfinished selection path.");
+    startPending();
+    auto nextPlayer = extension;
+    nextPlayer.startTurn(1);
+    nextPlayer.currentPlayer().score().setRoundScore(600);
+    nextPlayer.manageDiceCount(3);
+    nextPlayer.setSavedMultipleScore(6, 600);
+    nextPlayer.currentPlayer().dice().diceSetMap() = {{1, 1}, {5, 1}, {6, 1}};
+    nextPlayer.registerRoll();
+    nextPlayer.registerRoll();
+    nextPlayer.setSelectedOption(true);
+    samePlan(selectRoll(nextPlayer, production), selectRoll(nextPlayer, candidate),
+             "Production must discard another player's plan even with the same roll count and selection flag.");
+}
+
+void productionMatchParity()
+{
+    constexpr ResearchFeatures frozen{1.0, true, true, true, true};
+    std::size_t checked = 0;
+    for (const auto target : {5000U, 10000U}) {
+        for (const bool stealing : {false, true}) {
+            for (const bool sets : {false, true}) {
+                for (const auto difficulty : {std::optional<ComputerDifficulty>{},
+                                              std::optional{ComputerDifficulty::Easy},
+                                              std::optional{ComputerDifficulty::Medium},
+                                              std::optional{ComputerDifficulty::Hard}}) {
+                    const auto policy = difficulty ? zilch::policyForDifficulty(*difficulty, stealing) : zilch::Policy{};
+                    const auto expectedFeatures = difficulty == ComputerDifficulty::Hard && !stealing ? frozen : ResearchFeatures{};
+                    const auto opponentPolicy = zilch::policyForDifficulty(ComputerDifficulty::Medium, stealing);
+                    ComputerController production(policy, difficulty);
+                    ComputerController candidate(policy, difficulty, std::nullopt, expectedFeatures);
+                    ComputerController firstOpponent(opponentPolicy, ComputerDifficulty::Medium);
+                    ComputerController secondOpponent(opponentPolicy, ComputerDifficulty::Medium, std::nullopt, {});
+                    for (std::uint32_t seed = 1; seed <= 32; ++seed) {
+                        for (const bool swapped : {false, true}) {
+                            GameManager game;
+                            game.setPlayers({"A", "B"});
+                            game.setScoreLimit(target);
+                            game.ruleConfig().setStealingEnabled(stealing);
+                            game.ruleConfig().setThreePairsEnabled(sets);
+                            std::mt19937 firstRng(seed + 3500000000U);
+                            std::mt19937 secondRng(seed + 3500000000U);
+                            const std::vector<zilch::Controller*> first = swapped
+                                ? std::vector<zilch::Controller*>{&firstOpponent, &production}
+                                : std::vector<zilch::Controller*>{&production, &firstOpponent};
+                            const std::vector<zilch::Controller*> second = swapped
+                                ? std::vector<zilch::Controller*>{&secondOpponent, &candidate}
+                                : std::vector<zilch::Controller*>{&candidate, &secondOpponent};
+                            std::ostringstream firstLog;
+                            std::ostringstream secondLog;
+                            const auto actual = zilch::playMatchFromState(game, first, firstRng,
+                                zilch::MatchEntry::StartTurn, &firstLog);
+                            const auto expected = zilch::playMatchFromState(game, second, secondRng,
+                                zilch::MatchEntry::StartTurn, &secondLog);
+                            expect(actual.finalScores == expected.finalScores && actual.winnerIndex == expected.winnerIndex &&
+                                       actual.winningScore == expected.winningScore && firstRng == secondRng &&
+                                       firstLog.str() == secondLog.str(),
+                                   "Production and frozen-feature controllers must reproduce complete seeded match transcripts and RNG state.");
+                            ++checked;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    expect(checked == 2048, "Seeded production/default-isolation parity lost a rule, target, seat, or difficulty.");
+    std::cout << "Verified " << checked << " seeded production/frozen-or-unchanged full-match pairs.\n";
+}
+
 } // namespace
 
 int main()
@@ -531,6 +702,8 @@ int main()
         jointSelectionAndEndgames();
         chainsOnlyOrdinaryParity();
         chainsOnlySelectionAndLifetime();
+        productionDecisionParity();
+        productionMatchParity();
         std::cout << "Research candidate scoring, cache, threshold, safe-finish and scoped joint-selection tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

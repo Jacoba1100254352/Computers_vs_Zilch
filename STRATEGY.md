@@ -9,9 +9,35 @@ The historical experiments below used `main` at
 added. The named-level comparisons below used the parity implementation built
 directly on that exact revision.
 
-## Current hot-dice refinement
+## Current multiple-aware Hard refinement
 
-Standard Hard now banks near `200,1050,1150,1550,2150,5000` for one through
+Named Hard with Stealing off now uses the frozen chain-scoped planner selected
+by the multiple-selection study. It compares legal scoring selections and
+Bank/Roll actions together when a multiple is available or a saved multiple
+exists. Its full-strength symmetric blend uses the saved-chain next-roll
+scoring expectation and bust probability, then retains the existing opening,
+lead/trail, closing, and Final Chase adjustments. Collecting all scoring dice
+for hot dice competes with keeping the chain; neither is always preferred.
+
+The exact feature pack is `chainRiskWeight=1`, `lowerChainThresholds=true`,
+`jointSelection=true`, `jointChainsOnly=true`, and
+`safeFinishCollection=true`. The independent finish guard also collects an
+available guaranteed outright win on non-chain rolls. Outside chain scope,
+ordinary selection and collect-before-bank remain in use. The six-dice base
+cutoff stays 5,000, and the policy-file coefficients are unchanged.
+
+This is enabled by the ordinary named-Hard controller constructor. Explicit
+`ResearchFeatures{}` keeps the preceding behavior, so research and ablation
+callers cannot silently acquire the new default. Raw policy files, training,
+Easy, Medium, and Stealing retain their existing behavior. See the
+[multiple-selection evidence](https://github.com/anderson-webops/zilch.jacobdanderson.net/tree/main/docs/research/multiple-selection-2026-09)
+for the checkpoint confirmations, frozen candidate, and full-game holdouts.
+The evidence concerns tested two-player configurations, not mathematical
+optimality or every custom-rule setting.
+
+## Previous hot-dice refinement
+
+The preceding standard Hard banked near `200,1050,1150,1550,2150,5000` for one through
 six dice, subject to its opening and endgame rules. After its existing scoring
 plan commits to banking, it collects remaining guaranteed scoring points and
 retains that commitment if collecting produces hot dice. Stealing retains its
@@ -38,7 +64,7 @@ the selected candidate in tuning. See `research/README.md` for the new harness.
 | --- | --- |
 | Easy | Takes every available scoring option, normally banks at 600 round points, and still banks immediately when that completes a win. |
 | Medium | Takes all available scoring dice, uses dice-aware base thresholds, and compares the leader, finish line, and remaining dice before staging below 5,000 or building a Final Chase buffer. |
-| Hard | Uses the strongest tested scoring and banking policy for the active Stealing setting, then applies the same finish awareness with a slightly higher tolerance for another roll. |
+| Hard | Standard play adds chain-aware joint selection and safe winning-score collection to the tested policy and finish awareness. Stealing retains its separately trained policy. |
 
 The finish rules are deliberately readable heuristics. With Final Chase on, a
 named Medium or Hard bot may stop within 150 points of the target when it has a
@@ -60,7 +86,9 @@ File: `trained_policy.cfg`
 
 SHA-256: `aff692a2a5efba2777f9963754d026cb7750b2102071bd984f58e69c41c77abe`
 
-Base banking thresholds by dice available for the next roll:
+Base banking thresholds by dice available for the next roll. Current standard
+Hard adjusts these for saved multiples inside its planner; this is not a fixed
+banking table for every chain state:
 
 | Dice | Exact policy cutoff | Next attainable score |
 | ---: | ---: | ---: |

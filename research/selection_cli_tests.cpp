@@ -182,6 +182,28 @@ void jointFeatureReachesController()
           "Unrestricted joint planning must retain its different stop-short choice on the same singleton-only roll.");
 }
 
+void productionDefaultsDoNotChangeResearchBaseline()
+{
+    auto baseline = selectionConfig();
+    baseline.roll = {6, 1, 5};
+    baseline.atRisk = 600;
+    baseline.bankedA = 1000;
+    baseline.bankedB = 1000;
+    baseline.savedMultiples = {0, 0, 0, 0, 0, 600};
+    baseline.selectLeft = {6};
+    baseline.selectRight = {6, 1, 5};
+    const auto old = run(baseline);
+    check(old.find("\"incumbent_recommendation\":{\"selected_dice\":[1,5,6],\"action\":\"bank\",\"score_gain\":750") != std::string::npos &&
+          old.find("\"chain_risk_weight\":0") != std::string::npos &&
+          old.find("\"effective_joint_selection\":false") != std::string::npos,
+          "Research defaults must keep the old Bank treatment and honestly report disabled features after production activation.");
+    baseline.featuresA = {1.0, true, true, true, true};
+    const auto enabled = run(baseline);
+    check(enabled.find("\"incumbent_recommendation\":{\"selected_dice\":[1,5,6],\"action\":\"roll\",\"score_gain\":750") != std::string::npos &&
+          enabled.find("\"joint_selection_scope\":\"chain_rolls\"") != std::string::npos,
+          "Only explicitly requesting the frozen pack may activate the candidate in research runs.");
+}
+
 void exclusiveEvidenceWrite()
 {
     std::filesystem::path directory;
@@ -226,6 +248,7 @@ int main()
         scopedJointParsingAndMetadata();
         pairedIdentityAndThreadSeeds();
         jointFeatureReachesController();
+        productionDefaultsDoNotChangeResearchBaseline();
         exclusiveEvidenceWrite();
         std::cout << "Selection CLI, paired seeds, metadata, and no-overwrite tests passed.\n";
         return 0;

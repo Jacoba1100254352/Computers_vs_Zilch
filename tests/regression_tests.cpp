@@ -810,8 +810,8 @@ void testOptionalCollectorBanksAllGuaranteedPoints()
     game.registerRoll();
     setDice(game, {1, 1, 5, 2, 3, 4});
     zilch::Checker checker(game);
-    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard, false);
-    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
+    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard, false, {});
+    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true, {});
 
     auto options = checker.availableOptions();
     expect(incumbent.chooseOption(game, options) == collector.chooseOption(game, options),
@@ -874,8 +874,8 @@ void testOptionalCollectorPreservesRollsAndResetsItsPlan()
     game.registerRoll();
     setDice(game, {1, 1, 5, 2, 3, 4});
     zilch::Checker checker(game);
-    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard, false);
-    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
+    zilch::ComputerController incumbent(policy, zilch::ComputerDifficulty::Hard, false, {});
+    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true, {});
     auto options = checker.availableOptions();
     checker.applyOption(options[collector.chooseOption(game, options)]);
     options = checker.availableOptions();
@@ -922,7 +922,7 @@ void testOptionalCollectorCommitsThroughHotDice()
     policy.leadFactor = 0;
     policy.trailFactor = 0;
     policy.closingFactor = 0;
-    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true);
+    zilch::ComputerController collector(policy, zilch::ComputerDifficulty::Hard, true, {});
     zilch::Checker checker(game);
     auto options = checker.availableOptions();
     expect(collector.decideAfterSelection(game, options) == zilch::PostSelectionDecision::SelectAgain,
@@ -956,7 +956,7 @@ void testOptionalCollectorKeepsAnImmediateWinningBank()
     setDice(game, {1, 1, 5, 2, 3, 4});
     zilch::Checker checker(game);
     zilch::ComputerController collector(
-        zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard), zilch::ComputerDifficulty::Hard, true);
+        zilch::policyForDifficulty(zilch::ComputerDifficulty::Hard), zilch::ComputerDifficulty::Hard, true, {});
     auto options = checker.availableOptions();
     checker.applyOption(options[collector.chooseOption(game, options)]);
     for (int selection = 0; selection < 2; ++selection) {

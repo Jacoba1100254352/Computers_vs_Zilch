@@ -99,7 +99,8 @@ struct Decision {
     bool canBank{};
 };
 
-Decision decide(const Input& input, const zilch::Policy& policy, const bool collect)
+Decision decide(const Input& input, const zilch::Policy& policy, const bool collect,
+                const std::optional<zilch::ResearchFeatures> features = std::nullopt)
 {
     zilch::GameManager game;
     game.setPlayers({"Computer", "Opponent"});
@@ -130,7 +131,9 @@ Decision decide(const Input& input, const zilch::Policy& policy, const bool coll
     game.registerRoll();
     const auto originalDice = liveDice;
     zilch::Checker checker(game);
-    zilch::ComputerController controller(policy, zilch::ComputerDifficulty::Hard, collect);
+    zilch::ComputerController controller = features
+        ? zilch::ComputerController(policy, zilch::ComputerDifficulty::Hard, collect, *features)
+        : zilch::ComputerController(policy, zilch::ComputerDifficulty::Hard, collect);
     Decision result;
     auto options = checker.availableOptions();
     if (options.empty()) {
@@ -212,9 +215,19 @@ void selfTest()
     commitmentPolicy.leadFactor = 0;
     commitmentPolicy.trailFactor = 0;
     commitmentPolicy.closingFactor = 0;
-    const auto commitment = decide(parseInput("600 0 0 5000 0 0 1 0 1 1 1,5,2,2,2 0,0,0,0,0,0"), commitmentPolicy, true);
+    const auto commitment = decide(parseInput("600 0 0 5000 0 0 1 0 1 1 1,5,2,2,2 0,0,0,0,0,0"),
+                                   commitmentPolicy, true, zilch::ResearchFeatures{});
     check(commitment.action == "Bank" && commitment.projectedTurnScore == 950 && commitment.nextDice == 6,
           "The probe must preserve a bank commitment when final collection produces hot dice.");
+    const auto extension = parseInput("600 1000 1000 5000 1000 0 1 0 1 1 6,1,5 0,0,0,0,0,600");
+    const auto released = decide(extension, policy, true);
+    const auto explicitCandidate = decide(extension, policy, true, zilch::ResearchFeatures{1, true, true, true, true});
+    const auto baseline = decide(extension, policy, true, zilch::ResearchFeatures{});
+    check(released.action == "Roll" && released.projectedTurnScore == 1350 && released.nextDice == 6 &&
+              released.selected == explicitCandidate.selected && released.action == explicitCandidate.action &&
+              released.projectedTurnScore == explicitCandidate.projectedTurnScore &&
+              baseline.action == "Bank" && baseline.projectedTurnScore == 1350,
+          "The probe must distinguish released chain planning from the explicitly retained v1.2 baseline.");
     std::cout << "Decision-probe self-test passed.\n";
 }
 
@@ -229,6 +242,8 @@ int main(const int argc, const char* const* argv)
         }
         std::optional<std::string> policyPath;
         std::optional<bool> collect;
+        std::optional<zilch::ResearchFeatures> features;
+        bool featuresSpecified = false;
         for (int index = 1; index < argc; ++index) {
             const std::string option = argv[index];
             if (index + 1 >= argc)
@@ -238,8 +253,17 @@ int main(const int argc, const char* const* argv)
                 policyPath = value;
             else if (option == "--collect" && !collect.has_value())
                 collect = boolean(value);
+            else if (option == "--features" && !featuresSpecified) {
+                featuresSpecified = true;
+                if (value == "baseline")
+                    features = zilch::ResearchFeatures{};
+                else if (value == "candidate")
+                    features = zilch::ResearchFeatures{1.0, true, true, true, true};
+                else if (value != "released")
+                    throw std::invalid_argument("Features must be released, baseline, or candidate.");
+            }
             else
-                throw std::invalid_argument("Supported options are --policy FILE and --collect true|false, each once.");
+                throw std::invalid_argument("Supported options: --policy FILE, --collect true|false, --features released|baseline|candidate, each once.");
         }
         if (!policyPath || !collect.has_value())
             throw std::invalid_argument("Specify --policy FILE and --collect true|false explicitly.");
@@ -251,7 +275,7 @@ int main(const int argc, const char* const* argv)
         while (std::getline(std::cin, line)) {
             ++lineNumber;
             try {
-                print(decide(parseInput(line), policy, *collect), lineNumber);
+                print(decide(parseInput(line), policy, *collect, features), lineNumber);
             } catch (const std::exception& error) {
                 std::cerr << "Input line " << lineNumber << ": " << error.what() << '\n';
                 return 1;

@@ -109,6 +109,22 @@ result, so file paths alone are not the policy identifier.
 Current released Hard includes collection before banking, so explicitly pass
 `--collect-a true --collect-b true` when testing that behavior. The research
 executable intentionally retains its old false defaults for reproducibility.
+It also passes an explicit `ResearchFeatures{}` pack for each player: production
+activation of the multiple-aware Hard constructor does not change an omitted
+research flag or its metadata. With collection enabled and all newer feature
+flags off, it reproduces Hard v1.2.0. To reproduce the current frozen standard
+Hard feature pack for A, also pass:
+
+```sh
+--chain-risk-a 1 --chain-mode-a blend --safe-finish-a true \
+  --joint-selection-a true --joint-chains-only-a true
+```
+
+Use the corresponding `-b` flags to enable that pack for B. The policy parameters
+stay unchanged, and the actual rules/difficulty guard disables these features
+for Stealing, raw policies, Easy, and Medium. Do not infer a complete policy from
+the name `Hard` alone in a saved research run; inspect its recorded flags.
+
 Research-only policy controls are `--chain-risk-a N` / `--chain-risk-b N` (weights
 from 0 through 8, default 0), `--chain-mode-a raise|blend` /
 `--chain-mode-b raise|blend` (default raise), `--safe-finish-a true|false` /
@@ -176,3 +192,21 @@ the count correction under incumbent, full-joint, and chain-scoped controllers.
 `zilch_selection_cli_tests` verifies parsing/metadata, identical-branch zero
 effects, bit-identical results across worker counts, use of both halves of the
 64-bit pair seed, and exclusive no-overwrite evidence writes.
+
+`zilch_candidate_tests` additionally compares 4,032 production/default versus
+literal frozen-pack selections across multiple face/size, pre-selection risk,
+banked-score position, opening/final-turn states, Sets, and saved extensions.
+It tests selection-plan resets and compares complete transcripts, final scores,
+and RNG state for 2,048 seeded full-match pairs across two targets, both seats,
+Sets/Stealing settings, and named/raw modes. These are implementation parity
+checks, not additional independent candidate-strength evidence.
+
+The batch `zilch_decision_probe` requires `--policy FILE --collect true|false`.
+Its optional `--features released|baseline|candidate` chooses the ordinary
+production default, explicit feature-off v1.2 behavior, or the literal approved
+frozen feature pack. Omitted `--features` means `released`; `baseline` does not
+disable the separately specified collector. Each input line retains the same
+12-field protocol: pre-selection turn score, own score, opponent score, target,
+opening, Stealing, Final Chase rule, active Final Chase, ties, Sets, comma-separated
+rolled dice, and six comma-separated saved-chain scores. Output is one JSON
+decision per line. Its Stealing guard applies to every feature mode.

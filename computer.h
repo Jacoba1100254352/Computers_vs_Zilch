@@ -53,8 +53,9 @@ struct Policy {
 bool loadPolicy(const std::string& path, Policy& policy);
 bool savePolicy(const std::string& path, const Policy& policy);
 
-// Explicit opt-in research candidates. Normal game/training callers preserve
-// the released policy until fresh holdouts justify changing its defaults.
+// Explicit research controls. An omitted feature argument enables the approved
+// pack for named standard Hard; an explicit ResearchFeatures{} retains v1.2.
+// Raw policies and other named levels keep their existing default behavior.
 struct ResearchFeatures {
     double chainRiskWeight{0.0};
     bool safeFinishCollection{false};
@@ -110,8 +111,14 @@ public:
     explicit ComputerController(
         Policy policy,
         std::optional<ComputerDifficulty> difficulty = std::nullopt,
-        std::optional<bool> collectBeforeBank = std::nullopt,
-        ResearchFeatures features = {});
+        std::optional<bool> collectBeforeBank = std::nullopt);
+    // Keep a separate overload: a fourth argument of {} must mean explicit
+    // feature-off, not an empty optional that silently enables production.
+    ComputerController(
+        Policy policy,
+        std::optional<ComputerDifficulty> difficulty,
+        std::optional<bool> collectBeforeBank,
+        ResearchFeatures features);
 
     TurnStartDecision decideTurnStart(GameManager& game) override;
     std::size_t chooseOption(GameManager& game, const std::vector<ScoringOption>& options) override;

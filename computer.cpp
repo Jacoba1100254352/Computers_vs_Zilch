@@ -918,6 +918,17 @@ std::optional<ChainRiskEstimate> researchChainRiskEstimate(const GameManager& ga
 ComputerController::ComputerController(
     Policy policy,
     const std::optional<ComputerDifficulty> difficulty,
+    const std::optional<bool> collectBeforeBank)
+    : ComputerController(std::move(policy), difficulty, collectBeforeBank,
+                         difficulty == ComputerDifficulty::Hard
+                             ? ResearchFeatures{1.0, true, true, true, true}
+                             : ResearchFeatures{})
+{
+}
+
+ComputerController::ComputerController(
+    Policy policy,
+    const std::optional<ComputerDifficulty> difficulty,
     const std::optional<bool> collectBeforeBank,
     const ResearchFeatures features)
     : policy_(std::move(policy)), difficulty_(difficulty), collectBeforeBank_(collectBeforeBank), features_(features)
